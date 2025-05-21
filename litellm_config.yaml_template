@@ -1,0 +1,29 @@
+model_list:
+  - model_name: "azure-gpt-4o"
+    litellm_params:
+      model: "azure/gpt-4o"
+      api_base: "https://<azure-openai-instance>.openai.azure.com/"
+      api_key: "os.environ/AZURE_OPENAI_API_KEY"
+      api_version: "2024-02-15-preview"
+    model_info:
+      key: "gpt-4o"
+  - model_name: "azure-gpt-4o-mini"
+    litellm_params:
+      model: "azure/gpt-4o-mini"
+      api_base: "https://<azure-openai-instance>.openai.azure.com/"
+      api_key: "os.environ/AZURE_OPENAI_API_KEY"
+      api_version: "2024-02-15-preview"
+    model_info:
+      key: "gpt-4o"
+  - model_name: "azure-text-embedding-3-large"
+    litellm_params:
+      model: "azure/text-embedding-3-large"
+      api_base: "https://<azure-openai-instance>.openai.azure.com/"
+      api_key: "os.environ/AZURE_OPENAI_API_KEY"
+      api_version: "2023-05-15"
+    model_info:
+      key: "text-embedding-3-large"
+general_settings:
+  master_key: "os.environ/LITELLM_SECRET_KEY"
+litellm_settings:
+  drop_params: True

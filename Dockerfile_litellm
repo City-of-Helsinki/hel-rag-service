@@ -1,0 +1,8 @@
+# Use the base image from GHCR
+FROM ghcr.io/berriai/litellm:main-latest
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the necessary configuration file into the container
+COPY litellm_config.yaml /app/config.yaml

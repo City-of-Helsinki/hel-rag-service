@@ -1,0 +1,85 @@
+services:
+  rag-owui-postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${POSTGRES_OWUI_DB}
+      POSTGRES_USER: ${POSTGRES_OWUI_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_OWUI_PASSWORD}
+    volumes:
+      - ./postgres_data_owui:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5442:5432"
+
+  rag-litellm-postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: ${POSTGRES_LITELLM_DB}
+      POSTGRES_USER: ${POSTGRES_LITELLM_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_LITELLM_PASSWORD}
+    volumes:
+      - ./postgres_data_litellm:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5443:5432"
+
+  rag-chat-openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    command: bash start.sh
+#    env_file: ".env-openwebui"
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - ./openwebui/data:/app/backend/data
+    depends_on:
+      - rag-owui-postgres
+      - rag-chat-litellm
+    environment:
+      - ENV=dev
+      - PORT=3001
+      - DATABASE_URL=postgresql://${POSTGRES_OWUI_USER}:${POSTGRES_OWUI_PASSWORD}@rag-owui-postgres:5432/${POSTGRES_OWUI_DB}
+      - OPENAI_API_BASE_URL=http://rag-chat-litellm:4000
+      - OPENAI_API_KEY=${LITELLM_MASTER_KEY}
+      - RAG_EMBEDDING_ENGINE=openai
+      - RAG_OPENAI_API_BASE_URL=http://rag-chat-litellm:4000/v1
+      - RAG_EMBEDDING_MODEL=azure-text-embedding-3-large
+      - RAG_OPENAI_API_KEY=${LITELLM_MASTER_KEY}
+      - ENABLE_RAG_WEB_SEARCH=False
+      - ENABLE_ADMIN_CHAT_ACCESS=false
+      - ANONYMIZED_TELEMETRY=False
+      - PIPELINES_API_KEY=${PIPELINES_API_KEY}
+      - TASK_MODEL=azure-gpt-4o-mini
+
+  rag-chat-litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    command: --config config.yaml
+    ports:
+      - "127.0.0.1:4001:4000"
+    volumes:
+      - ./litellm/data:/app/data
+      - ./litellm_config.yaml:/app/config.yaml
+    environment:
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - DATABASE_URL=postgresql://${POSTGRES_LITELLM_USER}:${POSTGRES_LITELLM_PASSWORD}@rag-litellm-postgres:5432/${POSTGRES_LITELLM_DB}
+    depends_on:
+      - rag-litellm-postgres
+
+  rag-chat-pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    container_name: pipelines
+    ports:
+      - "127.0.0.1:9091:9099"
+    volumes:
+      - ./custom_pipelines:/app/pipelines
+    environment:
+      - OPENAI_API_KEY=${LITELLM_MASTER_KEY}
+      - OPENAI_API_BASE_URL=http://rag-chat-litellm:4000
+      - DEFAULT_MODEL=azure-gpt-4o
+      - PIPELINES_API_KEY=${PIPELINES_API_KEY}
+      - PIPELINES_REQUIREMENTS_PATH=/app/pipelines/requirements.txt
+
+
+volumes:
+  postgres_data:
+    driver: local
+  chroma_data:
+    driver: local

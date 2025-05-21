@@ -1,0 +1,17 @@
+{
+  "type": "web",
+  "openwebui": {
+    "knowledge_name": "website_knowledge"
+  },
+  "data": {
+    "prefix": "web_",
+    "base_url": "https://www.hel.fi",
+    "paths": ["/fi/uutiset"],
+    "content_selectors": ["main"],
+    "follow_links": true,
+    "entry_config": {
+      "title_selector": "h1",
+      "file_name_selector": "h1"
+    }
+  }
+}

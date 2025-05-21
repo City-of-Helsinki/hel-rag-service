@@ -1,0 +1,10 @@
+{
+  "type": "events_api",
+  "openwebui": {
+    "knowledge_name": "events_knowledge"
+  },
+  "data": {
+    "prefix": "event_",
+    "api_url": "https://api.hel.fi/linkedevents/v1/event/?event_type=General&format=json&include=keywords,location&page=1&page_size=100&sort=end_time&start=now&super_event_type=umbrella,none&language=fi&publisher=ahjo:u021200130&all_ongoing=true"
+  }
+}

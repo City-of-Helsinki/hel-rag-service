@@ -1,0 +1,19 @@
+{
+  "type": "csv_excel",
+  "openwebui": {
+    "knowledge_name": "excel_knowledge"
+  },
+  "data": {
+    "prefix": "excel_",
+    "file_path": "path/to/excel.xlsx",
+    "content_fields": [
+      "colum_name_1",
+      "colum_name_2"
+    ],
+    "entry_config": {
+      "file_name_field": "colum_name_1",
+      "title_field": "colum_name_1"
+    },
+    "field_mapping": {}
+  }
+}

@@ -1,0 +1,16 @@
+FROM python:3.13-slim
+WORKDIR /app
+ADD *.py /app
+ADD requirements.txt /app
+# Copy the necessary configuration files into the container
+ADD config/prod/one_time_imports/*.json /app/config/one_time_imports/
+ADD config/prod/scheduled_imports/*.json /app/config/scheduled_imports/
+
+# Install the necessary python dependencies
+RUN python -m pip install -r requirements.txt
+
+# Expose the port the app runs on
+EXPOSE 8001
+
+# Run the FastAPI application
+CMD ["uvicorn", "data_import_app:app", "--host", "0.0.0.0", "--port", "8001"]

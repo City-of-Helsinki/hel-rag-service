@@ -1,0 +1,10 @@
+openai
+pandas
+openpyxl
+requests
+beautifulsoup4
+tiktoken
+python-dotenv
+fastapi
+uvicorn
+apscheduler
