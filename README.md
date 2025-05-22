@@ -19,7 +19,7 @@ and web scraping to OpenWebUI knowledge base.
          api_version: 2024-02-15-preview # Your Azure API version
    ```
 3. Run `docker compose up` to start the application.
-4. Open the browser and navigate to http://localhost:3001 to access the chat application.
+4. Open the browser and navigate to http://localhost:3002 to access the chat application.
 5. Create admin user for the chat application by registering a new user. The first user will become the admin user.
 6. Verify that chat is working and you can find all the models configured in litellm_config.yaml.
 
@@ -59,7 +59,7 @@ The data pipeline is used to import data into the OpenWebUI knowledge base. It s
    {
      "type": "web",
      "openwebui": {
-       "base_url": "http://localhost:3001",
+       "base_url": "http://localhost:3002",
        "token": "your_token_here",
        "knowledge_name": "web_scraper_knowledge"
      },
@@ -86,7 +86,7 @@ The data pipeline is used to import data into the OpenWebUI knowledge base. It s
 
 You need a API key in order to communicate with OpenWebUI api. You can generate one in user interface.
 
-0. Go to admin panel, eg.  http://localhost:3001/admin/settings 
+0. Go to admin panel, eg.  http://localhost:3002/admin/settings 
 1. Enable API access for the admin user in the admin panel. "Enable API key"
 2. Set restrictions for the API key in the admin panel. "Allowed endpoints"
 3. Get the api key from Admin -> Settings -> Account -> Api key
