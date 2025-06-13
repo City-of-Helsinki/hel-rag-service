@@ -5,12 +5,13 @@ from abc import ABC, abstractmethod
 import requests
 import logging
 import tiktoken
+from requests import RequestException
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class OpenWebUIDataImporter(ABC):
 
+class OpenWebUIDataImporter(ABC):
 
     def __init__(self, config: dict):
         self.config = config
@@ -40,6 +41,7 @@ class OpenWebUIDataImporter(ABC):
 
         self.knowledge_name = config['openwebui']['knowledge_name']
         self.file_upload_url = f"{self.base_url}/api/v1/files/"
+        self.reset_uploads_url = f"{self.base_url}/api/v1/retrieval/reset/uploads"
         self.knowledge_url = f"{self.base_url}/api/v1/knowledge"
         self.token_counts = []
         self.tokenizer = tiktoken.get_encoding("o200k_base")
@@ -114,6 +116,17 @@ class OpenWebUIDataImporter(ABC):
                 os.remove(temp_file_path)
                 logging.info(f"Temporary file removed: {temp_file_path}")
 
+    def reset_uploads_folder(self):
+        logging.info("Resetting uploads folder...")
+        try:
+            response = requests.post(self.reset_uploads_url, headers=self.get_headers())
+            response.raise_for_status()
+            logging.info(
+                "Uploads folder reset successfully."
+                if response.status_code == 200 else "Failed to reset uploads folder.")
+        except RequestException:
+            logging.error("Failed to reset uploads folder.")
+
     def add_file_to_knowledge(self, knowledge_id, file_id):
         url = f"{self.knowledge_url}/{knowledge_id}/file/add"
         headers = self.get_headers()
@@ -150,6 +163,8 @@ class OpenWebUIDataImporter(ABC):
                 logging.error(f"Failed to upload file: {e}")
         logging.info("Knowledge updated with data")
         logging.info("Mean content size in tokens: " + str(self.calculate_average_token_count()))
+        # Empties uploads folder after data is stored in knowledge
+        self.reset_uploads_folder()
 
     def get_knowledge_by_name(self):
         headers = self.get_headers()
