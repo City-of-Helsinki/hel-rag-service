@@ -1,0 +1,50 @@
+# 30-otel-collector-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch: {}
+
+    exporters:
+      elasticsearch:
+        endpoints: ["http://elasticsearch:9200"]
+        mapping:
+          mode: ecs
+        logs_index: "otel-logs-openwebui"
+        metrics_index: "otel-metrics-openwebui"
+        traces_index: "otel-traces-openwebui"
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      zpages:
+        endpoint: 0.0.0.0:55679
+
+    service:
+      extensions: [zpages]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [elasticsearch]
+
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [elasticsearch]
+
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [elasticsearch]

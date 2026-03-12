@@ -1,0 +1,25 @@
+# 32-otel-collector-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      protocol: TCP
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      protocol: TCP
+      port: 4318
+      targetPort: otlp-http
+    - name: zpages
+      protocol: TCP
+      port: 55679
+      targetPort: zpages
+    - name: health
+      protocol: TCP
+      port: 13133
+      targetPort: health
