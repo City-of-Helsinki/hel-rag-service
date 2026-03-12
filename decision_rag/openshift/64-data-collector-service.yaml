@@ -1,0 +1,12 @@
+# 64-data-collector-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-collector
+spec:
+  selector:
+    app: data-collector
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200

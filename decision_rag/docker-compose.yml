@@ -1,0 +1,65 @@
+services:
+  decision-pipeline-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: decision-pipeline-backend
+    depends_on:
+      rag-elastic-vectordb:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - ELASTICSEARCH_URL=http://rag-elastic-vectordb:9200
+    volumes:
+      - ./backend/data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+  
+  rag-chat-openwebui-dev:
+    image: ghcr.io/open-webui/open-webui:main
+    command: bash start.sh
+    ports:
+      - "127.0.0.1:3000:8080"
+    volumes:
+      - ./openwebui/data:/app/backend/data
+    depends_on:
+      - rag-elastic-vectordb
+    environment:
+      - ENV=dev
+      - VECTOR_DB=elasticsearch
+      - ELASTICSEARCH_URL=http://rag-elastic-vectordb:9200
+      - RAG_EMBEDDING_ENGINE=openai
+      - RAG_EMBEDDING_MODEL=azure-text-embedding-3-large
+  
+  rag-elastic-vectordb:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.2.1-arm64
+    labels:
+      co.elastic.logs/module: elasticsearch
+    volumes:
+      - ./esdata01:/usr/share/elasticsearch/data
+    ports:
+      - '9200:9200'
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms1536m -Xmx1536m
+      - xpack.security.enabled=false # No need to enable https in a local development environment
+      - xpack.security.enrollment.enabled=false
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  postgres_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
