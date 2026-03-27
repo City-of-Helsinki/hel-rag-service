@@ -2,17 +2,9 @@
 # an update to the specified branches or you push specified tags.
 trigger:
   batch: true
-  branches:
+  tags:
     include:
-      - main
-  paths:
-    exclude:
-    - '*release-please*'
-    - '*.md'
-    - '.github/'
-    - 'pipelines/decision_rag-release.yml'
-    - 'pipelines/decision_rag-review.yml'
-    - '*compose*'
+      - hel-rag-service-v*
 
 # Pull request (PR) triggers cause a pipeline to run whenever a pull request is
 # opened with one of the specified target branches, or when updates are made to
@@ -38,12 +30,17 @@ resources:
 
 extends:
   # Filename in Azure DevOps Repository
-  template: components/decision_rag/pipelines/decision_rag-dev.yml@hel-rag-service-pipelines
+  template: components/decision-rag/pipelines/decision-rag-release.yml@hel-rag-service-pipelines
   # parameters:
     # Application build arguments and config map values as key value pairs.
     # Does not contain all buildArguments or configMap values, the rest located in hel-rag-service-pipelines
     # The values here will override the values defined in the hel-rag-service-pipelines repository
-    # buildArgs:
+    ## Staging definitions
+    # buildArgsStage:
     #   DEBUG: 1
+    # configMapStage: # pod environment variables
+    #   DEBUG: 1
+    ## Production definitions
+    ## Production is using staging image
     # configMap: # pod environment variables
     #   DEBUG: 1
