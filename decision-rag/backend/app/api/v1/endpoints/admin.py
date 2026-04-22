@@ -4,10 +4,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.deps import get_repository, get_vector_store, verify_api_key
+from app.api.deps import get_elasticsearch_store, get_pgvector_store, get_repository, verify_api_key
 from app.core import get_logger, settings
 from app.repositories import DecisionRepository
-from app.services import ElasticsearchVectorStore
+from app.services import ElasticsearchVectorStore, PgvectorVectorStore
 from app.utils import raise_error_with_id
 
 router = APIRouter()
@@ -97,17 +97,17 @@ async def clear_repository(
         )
 
 
-@router.delete("/vector-store")
-async def clear_vector_store(
+@router.delete("/vector-store/elasticsearch")
+async def clear_elasticsearch_vector_store(
     confirm: bool = Query(
         False,
         description="Must be set to true to confirm deletion",
     ),
-    vector_store: ElasticsearchVectorStore = Depends(get_vector_store),
+    vector_store: ElasticsearchVectorStore = Depends(get_elasticsearch_store),
     _: None = Depends(verify_api_key),
 ):
     """
-    Clear all documents from vector store.
+    Clear all documents from the Elasticsearch vector store.
 
     **WARNING**: This operation is irreversible and will delete all indexed
     document chunks and embeddings from Elasticsearch.
@@ -125,13 +125,11 @@ async def clear_vector_store(
         )
 
     try:
-        # Get count before deletion
         count_response = vector_store.client.count(index=vector_store.index_name)
         total_before = count_response.get("count", 0)
 
-        logger.info(f"Clearing vector store: {total_before} chunks to delete")
+        logger.info(f"Clearing Elasticsearch vector store: {total_before} chunks to delete")
 
-        # Delete all documents
         delete_response = vector_store.client.delete_by_query(
             index=vector_store.index_name,
             body={"query": {"match_all": {}}},
@@ -139,19 +137,76 @@ async def clear_vector_store(
 
         deleted = delete_response.get("deleted", 0)
 
-        logger.info(f"Vector store cleared: {deleted} chunks deleted")
+        logger.info(f"Elasticsearch vector store cleared: {deleted} chunks deleted")
 
         return {
             "status": "success",
-            "message": "Vector store cleared successfully",
+            "message": "Elasticsearch vector store cleared successfully",
             "chunks_deleted": deleted,
         }
 
     except Exception as e:
         raise_error_with_id(
             logger, e, status_code=500,
-            message="Failed to clear vector store",
-            context={"operation": "clear_vector_store"},
+            message="Failed to clear Elasticsearch vector store",
+            context={"operation": "clear_elasticsearch_vector_store"},
+        )
+
+
+@router.delete("/vector-store/pgvector")
+async def clear_pgvector_vector_store(
+    confirm: bool = Query(
+        False,
+        description="Must be set to true to confirm deletion",
+    ),
+    vector_store: PgvectorVectorStore = Depends(get_pgvector_store),
+    _: None = Depends(verify_api_key),
+):
+    """
+    Clear all documents from the pgvector (PostgreSQL) vector store.
+
+    **WARNING**: This operation is irreversible and will delete all indexed
+    document chunks and embeddings from PostgreSQL.
+
+    Args:
+        confirm: Must be explicitly set to true to perform deletion
+
+    Returns:
+        Deletion statistics
+    """
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Must set confirm=true to perform this operation",
+        )
+
+    try:
+        with vector_store.conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM {vector_store.table};")
+            total_before = cur.fetchone()[0]
+
+        logger.info(f"Clearing pgvector store: {total_before} chunks to delete")
+
+        with vector_store.conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {vector_store.table};")
+            deleted = cur.rowcount
+
+        vector_store.conn.commit()
+
+        logger.info(f"pgvector store cleared: {deleted} chunks deleted")
+
+        return {
+            "status": "success",
+            "message": "pgvector store cleared successfully",
+            "chunks_deleted": deleted,
+        }
+
+    except Exception as e:
+        vector_store.conn.rollback()
+        raise_error_with_id(
+            logger, e, status_code=500,
+            message="Failed to clear pgvector store",
+            context={"operation": "clear_pgvector_vector_store"},
         )
 
 

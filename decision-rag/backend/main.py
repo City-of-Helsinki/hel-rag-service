@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 import uvicorn
+import sentry_sdk
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,6 +61,19 @@ async def lifespan(app: FastAPI):
             logger.warning("Continuing without scheduler")
     else:
         logger.info("Scheduler is disabled")
+
+    # Initialize Sentry, if enabled
+    if settings.SENTRY_ENABLED:
+        logger.info("Initializing Sentry for error tracking...")
+        try:
+            sentry_sdk.init(
+                dsn=settings.SENTRY_DSN,
+                environment=settings.SENTRY_ENVIRONMENT,
+            )
+            logger.info("Sentry initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Sentry: {e}", exc_info=True)
+            logger.warning("Continuing without Sentry")
 
     yield
 
@@ -214,7 +228,6 @@ async def root() -> Dict[str, Any]:
         "docs": "/docs" if settings.DEBUG else None,
         "openapi": "/openapi.json" if settings.DEBUG else None,
     }
-
 
 # Include API router with prefix
 app.include_router(api_router, prefix=settings.API_PREFIX)

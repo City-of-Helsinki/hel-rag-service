@@ -2,11 +2,56 @@
 Logging configuration for the pipeline.
 """
 
+import json
 import logging
+import re
 import sys
+import traceback
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+
+
+class JsonFormatter(logging.Formatter):
+    """
+    Formats log records as JSON strings.
+
+    Args:
+        include_location: Include ``function`` and ``line`` fields.
+        include_exc_info: Include ``exc_info`` field when an exception is
+            attached to the record.
+    """
+
+    def __init__(self, include_location: bool = False, include_exc_info: bool = False) -> None:
+        super().__init__()
+        self.include_location = include_location
+        self.include_exc_info = include_exc_info
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Serialize *record* to a JSON string."""
+        try:
+            record.message = record.getMessage()
+            ts = datetime.fromtimestamp(record.created).strftime("%Y-%m-%dT%H:%M:%S")
+            ms = int(record.msecs)
+
+            # Redact sensitive information from message
+            message = record.message
+            message = re.sub(r"(api[-_]?key|token|password|secret)[=:]\s*[\w-]+", r"\1=REDACTED", message, flags=re.IGNORECASE)
+
+            log_entry: dict = {
+                "timestamp": f"{ts}.{ms:03d}",
+                "logger": record.name,
+                "level": record.levelname,
+                "message": message,
+            }
+            if self.include_location:
+                log_entry["function"] = record.funcName
+                log_entry["line"] = record.lineno
+            if self.include_exc_info and record.exc_info:
+                log_entry["exc_info"] = traceback.format_exception(*record.exc_info)
+            return json.dumps(log_entry)
+        except Exception:
+            return json.dumps({"level": "ERROR", "message": "Failed to serialize log record"})
 
 
 def cleanup_old_logs(log_dir: str, retention_days: int) -> None:
@@ -87,7 +132,6 @@ def setup_logging(
         retention_days: Number of days to keep old logs (0 = disable cleanup)
         rotation_when: When to rotate logs (midnight, W0-W6 for weekdays, etc.)
         rotation_interval: Interval for rotation
-        backup_count: Number of backup files to keep (0 = use retention_days instead)
     """
     # Create log directory if it doesn't exist
     log_path = Path(log_dir)
@@ -100,12 +144,14 @@ def setup_logging(
     # Remove existing handlers
     root_logger.handlers.clear()
 
+    # Shared formatters
+    console_formatter = JsonFormatter(include_location=False, include_exc_info=False)
+    file_formatter = JsonFormatter(include_location=True, include_exc_info=False)
+    error_formatter = JsonFormatter(include_location=True, include_exc_info=True)
+
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-    )
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
 
@@ -117,10 +163,6 @@ def setup_logging(
     )
     file_handler.suffix = "_%Y-%m-%d"
     file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
     file_handler.setFormatter(file_formatter)
     root_logger.addHandler(file_handler)
 
@@ -147,7 +189,7 @@ def setup_logging(
     )
     error_handler.suffix = "_%Y-%m-%d"
     error_handler.setLevel(logging.ERROR)
-    error_handler.setFormatter(file_formatter)
+    error_handler.setFormatter(error_formatter)
     error_logger.addHandler(error_handler)
 
     logging.info("Logging initialized")

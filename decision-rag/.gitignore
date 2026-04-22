@@ -56,3 +56,9 @@ Thumbs.db
 
 # AI docs
 ai_docs/
+
+# Random scripts
+scripts/
+
+# Claude
+.claude/

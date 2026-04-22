@@ -1,10 +1,11 @@
 """Tests for logging configuration and log management."""
 
+import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from app.core.logging import cleanup_old_logs, setup_logging
+from app.core.logging import JsonFormatter, cleanup_old_logs, setup_logging
 
 
 class TestLogCleanup:
@@ -111,7 +112,7 @@ class TestSetupLogging:
         assert log_dir.exists()
 
     def test_setup_logging_creates_handlers_with_rotation(self, tmp_path):
-        """Test that setup_logging creates rotating file handlers."""
+        """Test that setup_logging creates rotating file handlers with JSON formatters."""
         log_dir = tmp_path / "test_logs"
 
         setup_logging(
@@ -130,13 +131,25 @@ class TestSetupLogging:
         assert (log_dir / "test_api.log").exists()
         assert (log_dir / "test_errors.log").exists()
 
-        # Test logging
-        logger = logging.getLogger("test")
-        logger.info("Test message")
+        # All root-logger handlers must use JsonFormatter
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers:
+            assert isinstance(handler.formatter, JsonFormatter), (
+                f"Handler {handler} uses {type(handler.formatter)} instead of JsonFormatter"
+            )
 
-        # Check that message was written
-        pipeline_content = (log_dir / "test_pipeline.log").read_text()
-        assert "Test message" in pipeline_content
+        # Emit a record and verify the file output is valid JSON with required keys
+        test_logger = logging.getLogger("test")
+        test_logger.info("Test message")
+
+        pipeline_content = (log_dir / "test_pipeline.log").read_text().strip()
+        for line in pipeline_content.splitlines():
+            if line.strip():
+                record = json.loads(line)
+                assert "timestamp" in record
+                assert "logger" in record
+                assert "level" in record
+                assert "message" in record
 
     def test_setup_logging_with_different_log_levels(self, tmp_path):
         """Test that different log levels work correctly."""
@@ -161,3 +174,99 @@ class TestSetupLogging:
         assert "Debug message" not in content
         assert "Info message" not in content
         assert "Warning message" in content
+
+
+class TestJsonFormatter:
+    """Tests for the JsonFormatter class."""
+
+    def _make_record(
+        self,
+        msg: str = "hello",
+        level: int = logging.INFO,
+    ) -> logging.LogRecord:
+        """Create a minimal LogRecord for testing."""
+        return logging.LogRecord(
+            name="test.logger",
+            level=level,
+            pathname="test_file.py",
+            lineno=42,
+            msg=msg,
+            args=(),
+            exc_info=None,
+        )
+
+    def test_console_format_produces_valid_json_with_required_keys(self):
+        """Console formatter emits valid JSON containing the four required keys."""
+        formatter = JsonFormatter(include_location=False, include_exc_info=False)
+        record = self._make_record("hello world")
+        output = formatter.format(record)
+
+        data = json.loads(output)
+        assert data["message"] == "hello world"
+        assert data["logger"] == "test.logger"
+        assert data["level"] == "INFO"
+        assert "timestamp" in data
+        assert "function" not in data
+        assert "line" not in data
+
+    def test_file_format_includes_location_fields(self):
+        """File formatter includes ``function`` and ``line`` fields."""
+        formatter = JsonFormatter(include_location=True, include_exc_info=False)
+        record = self._make_record("file message")
+        output = formatter.format(record)
+
+        data = json.loads(output)
+        assert "function" in data
+        assert isinstance(data["line"], int)
+
+    def test_error_format_includes_exc_info_when_present(self):
+        """Error formatter serialises attached exception traceback."""
+        import sys
+
+        formatter = JsonFormatter(include_location=True, include_exc_info=True)
+        try:
+            raise ValueError("test error")
+        except ValueError:
+            exc_info = sys.exc_info()
+
+        record = self._make_record("error occurred", level=logging.ERROR)
+        record.exc_info = exc_info
+        output = formatter.format(record)
+
+        data = json.loads(output)
+        assert "exc_info" in data
+        assert any("ValueError" in line for line in data["exc_info"])
+
+    def test_error_format_omits_exc_info_when_absent(self):
+        """Error formatter omits the ``exc_info`` key when no exception is attached."""
+        formatter = JsonFormatter(include_location=True, include_exc_info=True)
+        record = self._make_record("clean error", level=logging.ERROR)
+        output = formatter.format(record)
+
+        data = json.loads(output)
+        assert "exc_info" not in data
+
+    def test_fallback_on_serialization_error(self, monkeypatch):
+        """Formatter returns minimal valid JSON when ``json.dumps`` fails."""
+        import json as _json
+
+        import app.core.logging as log_module
+
+        formatter = JsonFormatter()
+        record = self._make_record("crash")
+
+        _original_dumps = _json.dumps
+        first_call = [True]
+
+        def _flaky_dumps(obj, **kwargs):
+            if first_call[0]:
+                first_call[0] = False
+                raise TypeError("not serializable")
+            return _original_dumps(obj, **kwargs)
+
+        monkeypatch.setattr(log_module.json, "dumps", _flaky_dumps)
+        output = formatter.format(record)
+
+        data = _json.loads(output)
+        assert data["level"] == "ERROR"
+        assert "Failed to serialize log record" in data["message"]

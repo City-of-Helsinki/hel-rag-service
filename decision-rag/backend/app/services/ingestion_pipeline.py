@@ -13,12 +13,13 @@ from typing import Any, Dict, List, Optional
 
 from app.core import get_logger, settings
 from app.repositories import DecisionRepository
-from app.schemas.decision import Attachment
+from app.schemas.decision import Attachment, DecisionDocument
 from app.services.attachment_downloader import AttachmentDownloader
 from app.services.chunker import ParagraphChunker
 from app.services.content_converter import convert_attachment_content, convert_decision_content
 from app.services.embedder import AzureEmbedder
-from app.services.vector_store import ElasticsearchVectorStore
+from app.services.parquet_embedding_saver import ParquetEmbeddingSaver
+from app.services.vector_store import BaseVectorStore
 
 logger = get_logger(__name__)
 
@@ -38,8 +39,9 @@ class IngestionPipeline:
         repository: DecisionRepository,
         chunker: ParagraphChunker,
         embedder: AzureEmbedder,
-        vector_store: ElasticsearchVectorStore,
+        vector_store: BaseVectorStore,
         attachment_downloader: Optional[AttachmentDownloader] = None,
+        parquet_saver: Optional[ParquetEmbeddingSaver] = None,
     ):
         """
         Initialize ingestion pipeline.
@@ -50,12 +52,14 @@ class IngestionPipeline:
             embedder: Embedding generation service
             vector_store: Vector store service
             attachment_downloader: Attachment download service (optional)
+            parquet_saver: Parquet embedding saver (optional)
         """
         self.repository = repository
         self.chunker = chunker
         self.embedder = embedder
         self.vector_store = vector_store
         self.attachment_downloader = attachment_downloader
+        self.parquet_saver = parquet_saver
         self._lock = threading.Lock()  # Thread safety for logging and stats
 
         logger.info("Initialized IngestionPipeline")
@@ -142,6 +146,17 @@ class IngestionPipeline:
                 logger.error(f"Failed to generate embeddings for {native_id}")
                 return stats
 
+            # Buffer embeddings for Parquet export (before indexing so a partial
+            # indexing failure does not prevent the embeddings from being saved)
+            if self.parquet_saver is not None:
+                try:
+                    self.parquet_saver.buffer(embedding_results, native_id)
+                except Exception as _exc:
+                    logger.warning(
+                        f"Parquet saver buffer error for {native_id}: {_exc}",
+                        exc_info=True,
+                    )
+
             # Prepare chunks with embeddings for indexing
             chunks_with_embeddings = []
             embedding_map = {er.chunk_id: er.embedding for er in embedding_results}
@@ -203,13 +218,15 @@ class IngestionPipeline:
 
         return stats
 
-    def process_batch(self, native_ids: List[str], reindex: bool = False) -> Dict[str, Any]:
+    def process_batch(self, native_ids: List[str], reindex: bool = False, batch_start: datetime = None, batch_end: datetime = None) -> Dict[str, Any]:
         """
         Process a batch of documents with optional parallelization.
 
         Args:
             native_ids: List of native IDs to process
             reindex: Force reindexing even if documents exist
+            batch_start: Optional start datetime for the batch
+            batch_end: Optional end datetime for the batch
 
         Returns:
             Dictionary with batch processing statistics
@@ -229,6 +246,10 @@ class IngestionPipeline:
         logger.info(f"Processing batch of {len(native_ids)} documents")
 
         max_workers = settings.MAX_WORKERS_INGESTION
+
+        # Start batch in Parquet saver if enabled (sets batch time window for blob naming)
+        if self.parquet_saver is not None and batch_start is not None and batch_end is not None:
+            self.parquet_saver.start_batch(batch_start, batch_end)
 
         if max_workers > 1:
             # Parallel processing with ThreadPoolExecutor
@@ -277,6 +298,12 @@ class IngestionPipeline:
             f"{batch_stats['total_attachment_chunks']} attachment chunks"
         )
 
+        # Flush accumulated embeddings to Parquet blob
+        if self.parquet_saver is not None:
+            success = self.parquet_saver.flush_batch()
+            if not success:
+                logger.warning("Parquet saver: flush_batch reported a failure — see earlier logs")
+
         return batch_stats
 
     def _update_batch_stats(
@@ -310,7 +337,7 @@ class IngestionPipeline:
                         {"native_id": native_id, "error": doc_stats["error"]}
                     )
 
-    def process_attachments(self, decision) -> Dict[str, Any]:
+    def process_attachments(self, decision: DecisionDocument) -> Dict[str, Any]:
         """
         Process all attachments for a decision with optional parallelization.
 
@@ -353,6 +380,10 @@ class IngestionPipeline:
                 return stats
 
             max_workers = settings.MAX_WORKERS_ATTACHMENT_PROCESSING
+
+            # Start batch in Parquet saver if enabled (sets batch time window for blob naming)
+            if self.parquet_saver is not None:
+                self.parquet_saver.start_batch(decision.DateDecision, decision.DateDecision)
 
             if max_workers > 1 and len(downloaded) > 1:
                 # Parallel attachment processing
@@ -432,6 +463,12 @@ class IngestionPipeline:
                             exc_info=True,
                         )
                         stats["failed"] += 1
+
+            # Flush accumulated embeddings to Parquet blob
+            if self.parquet_saver is not None:
+                success = self.parquet_saver.flush_batch()
+                if not success:
+                    logger.warning("Parquet saver: flush_batch reported a failure — see earlier logs")
 
             # All processing complete - safe to proceed to cleanup
 
@@ -528,6 +565,16 @@ class IngestionPipeline:
             if not embedding_results:
                 logger.error(f"Failed to generate embeddings for attachment {native_id}")
                 return stats
+
+            # Buffer embeddings for Parquet export
+            if self.parquet_saver is not None:
+                try:
+                    self.parquet_saver.buffer(embedding_results, decision.NativeId)
+                except Exception as _exc:
+                    logger.warning(
+                        f"Parquet saver buffer error for attachment {native_id}: {_exc}",
+                        exc_info=True,
+                    )
 
             # Prepare chunks with embeddings
             chunks_with_embeddings = []

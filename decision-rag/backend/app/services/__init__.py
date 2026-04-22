@@ -10,12 +10,15 @@ from .content_converter import (
     convert_decision_content,
 )
 from .data_fetcher import DecisionDataFetcher
+from .elasticsearch_store import ElasticsearchVectorStore
 from .embedder import AzureEmbedder, EmbeddingResult
 from .ingestion_pipeline import IngestionPipeline
 from .job_manager import Job, JobManager, job_manager
+from .parquet_embedding_saver import ParquetEmbeddingSaver
+from .pgvector_store import PgvectorVectorStore
 from .scheduler import SchedulerService
 from .scheduler_state import ExecutionRecord, SchedulerState, SchedulerStateManager
-from .vector_store import ElasticsearchVectorStore
+from .vector_store import BaseVectorStore, CompositeVectorStore, MaxRetriesExceededError
 
 __all__ = [
     "DecisionAPIClient",
@@ -29,11 +32,16 @@ __all__ = [
     "DocumentChunk",
     "AzureEmbedder",
     "EmbeddingResult",
+    "BaseVectorStore",
     "ElasticsearchVectorStore",
+    "PgvectorVectorStore",
+    "CompositeVectorStore",
+    "MaxRetriesExceededError",
     "IngestionPipeline",
     "Job",
     "JobManager",
     "job_manager",
+    "ParquetEmbeddingSaver",
     "SchedulerService",
     "SchedulerState",
     "SchedulerStateManager",

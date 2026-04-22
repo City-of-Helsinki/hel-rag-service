@@ -9,7 +9,7 @@ from app.api.deps import get_repository, get_vector_store
 from app.api.v1.models.responses import HealthResponse
 from app.core import settings
 from app.repositories import DecisionRepository
-from app.services import ElasticsearchVectorStore
+from app.services.vector_store import BaseVectorStore
 
 router = APIRouter()
 
@@ -27,13 +27,13 @@ async def health_check():
 @router.get("/health/detailed", response_model=HealthResponse)
 async def detailed_health_check(
     repository: DecisionRepository = Depends(get_repository),
-    vector_store: ElasticsearchVectorStore = Depends(get_vector_store),
+    vector_store: BaseVectorStore = Depends(get_vector_store),
 ):
     """
     Detailed health check with component status.
 
     Checks connectivity to:
-    - Elasticsearch
+    - Vector store
     - Azure OpenAI
     - External Decision API
     - File system
@@ -44,16 +44,15 @@ async def detailed_health_check(
     components: Dict[str, Dict[str, Any]] = {}
     overall_status = "healthy"
 
-    # Check Elasticsearch
+    # Check vector store
     try:
-        es_health = vector_store.client.cluster.health()
-        components["elasticsearch"] = {
+        stats = vector_store.get_statistics()
+        components["vector_store"] = {
             "status": "healthy",
-            "cluster_status": es_health.get("status"),
-            "number_of_nodes": es_health.get("number_of_nodes"),
+            "instance": stats.get("instance", "unknown"),
         }
     except Exception as e:
-        components["elasticsearch"] = {
+        components["vector_store"] = {
             "status": "unhealthy",
             "error": str(e),
         }

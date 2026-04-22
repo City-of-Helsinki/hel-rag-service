@@ -5,8 +5,9 @@ The DecisionAPIClient class provides methods for fetching decision IDs based on 
 """
 
 import logging
+import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import httpx
 from tenacity import (
@@ -27,16 +28,27 @@ logger = logging.getLogger(__name__)
 api_logger = logging.getLogger("api")
 
 
+class APIOutageError(Exception):
+    """Exception raised when API-wide outage is detected (404 on decision IDs endpoint)."""
+    pass
+
+
 class DecisionAPIClient:
     """Client for interacting with the Helsinki Paatos API."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        raw_response_saver: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ):
         """Initialize the API client."""
         self.base_url = settings.API_BASE_URL
         self.timeout = settings.REQUEST_TIMEOUT
         self.client = httpx.Client(timeout=self.timeout)
+        if settings.REQUESTS_PER_SECOND <= 0:
+            raise ValueError("REQUESTS_PER_SECOND must be greater than 0")
         self.rate_limit_delay = 1.0 / settings.REQUESTS_PER_SECOND
         self.last_request_time = 0
+        self.raw_response_saver = raw_response_saver
 
     def __enter__(self):
         """Context manager entry."""
@@ -51,14 +63,21 @@ class DecisionAPIClient:
         if self.client:
             self.client.close()
 
-    def _rate_limit(self):
-        """Apply rate limiting between requests."""
-        current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < self.rate_limit_delay:
-            sleep_time = self.rate_limit_delay - time_since_last
-            time.sleep(sleep_time)
-        self.last_request_time = time.time()
+    def _rate_limit(self) -> None:
+        """Apply rate limiting between requests.
+
+        Uses a lock to ensure thread-safe rate limiting across concurrent requests.
+        """
+        if not hasattr(self, '_rate_limit_lock'):
+            self._rate_limit_lock = threading.Lock()
+
+        with self._rate_limit_lock:
+            current_time = time.time()
+            time_since_last = current_time - self.last_request_time
+            if time_since_last < self.rate_limit_delay:
+                sleep_time = self.rate_limit_delay - time_since_last
+                time.sleep(sleep_time)
+            self.last_request_time = time.time()
 
     @retry(
         stop=stop_after_attempt(settings.MAX_RETRY_ATTEMPTS),
@@ -82,7 +101,17 @@ class DecisionAPIClient:
         """
         self._rate_limit()
 
-        api_logger.debug(f"Making request to {url} with params: {params}")
+        # Sanitize params before logging — never expose the API key.
+        _SENSITIVE_PARAM_KEYS = {"api-key", "apikey", "api_key", "key", "token", "secret"}
+        safe_params = (
+            {
+                k: ("***" if k.lower() in _SENSITIVE_PARAM_KEYS else v)
+                for k, v in params.items()
+            }
+            if params
+            else params
+        )
+        api_logger.debug(f"Making request to {url} with params: {safe_params}")
 
         try:
             response = self.client.get(url, params=params)
@@ -148,6 +177,19 @@ class DecisionAPIClient:
 
             return decision_response
 
+        except httpx.HTTPStatusError as e:
+            # 404, 500, or 504 on decision IDs endpoint indicates API-wide outage
+            if e.response.status_code == 404:
+                logger.error(f"API outage detected: 404 error fetching decision IDs from {start_date} to {end_date}")
+                raise APIOutageError(f"API returned 404 for decision IDs endpoint: {url}") from e
+            elif e.response.status_code == 500:
+                logger.error(f"API outage detected: 500 error fetching decision IDs from {start_date} to {end_date}")
+                raise APIOutageError(f"API returned 500 for decision IDs endpoint: {url}") from e
+            elif e.response.status_code == 504:
+                logger.error(f"API outage detected: 504 error fetching decision IDs from {start_date} to {end_date}")
+                raise APIOutageError(f"API returned 504 for decision IDs endpoint: {url}") from e
+            logger.error(f"HTTP error fetching decision IDs: {e}")
+            raise
         except Exception as e:
             logger.error(f"Error fetching decision IDs: {e}")
             raise
@@ -174,7 +216,15 @@ class DecisionAPIClient:
             response = self._make_request(url, params)
             data = response.json()
 
+            # Save full raw response if a saver is configured
+            if self.raw_response_saver is not None:
+                try:
+                    self.raw_response_saver(native_id, data)
+                except Exception as e:
+                    logger.error(f"Failed to save raw response for {native_id}: {e}")
+
             # The endpoint returns a single decision, not a list
+            # Compatible with v1 of the API
             if isinstance(data, dict):
                 # Try to parse as single decision
                 if "NativeId" in data:
@@ -186,6 +236,11 @@ class DecisionAPIClient:
                     response_obj = DecisionDocumentResponse(**data)
                     if response_obj.decisions:
                         return response_obj.decisions[0]
+            # Compatible with v2 of the API
+            elif isinstance(data, list) and len(data) > 0:
+                response_obj = DecisionDocumentResponse(decisions=[DecisionDocument(**item) for item in data])
+                if response_obj.decisions:
+                    return response_obj.decisions[0]
 
             logger.warning(f"No decision found for NativeId: {native_id}")
             return None

@@ -1,16 +1,13 @@
 """
-Vector store service for Elasticsearch integration.
+Vector store abstractions: base class, exception, and composite store.
 
-There are methods for bulk indexing, searching, and deleting documents, with retry logic for handling connection issues. The index is structured to be compatible with Open WebUI's expected format, including nested metadata fields.
+The concrete implementations live in elasticsearch_store.py and pgvector_store.py.
 """
 
-from datetime import datetime
+from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
-from elasticsearch import Elasticsearch, helpers
-from elasticsearch.exceptions import ConnectionError, ConnectionTimeout, TransportError
-
-from app.core import get_logger, settings
+from app.core import get_logger
 
 logger = get_logger(__name__)
 
@@ -21,317 +18,145 @@ class MaxRetriesExceededError(Exception):
     pass
 
 
-class ElasticsearchVectorStore:
+class BaseVectorStore(ABC):
     """
-    Service for storing and retrieving document embeddings in Elasticsearch.
+    Abstract base class for all vector store backends.
 
-    Configuration:
-    - Index name: (default decision_documents)
-    - Vector dimensions: 3072 (text-embedding-3-large)
-    - Similarity: cosine
+    Provides shared retry-counter state and helpers; subclasses must implement
+    all abstract methods.
     """
 
-    def __init__(self, url: str = None, index_name: str = None, vector_dims: int = 3072):
-        """
-        Initialize Elasticsearch vector store.
+    def __init__(self) -> None:
+        from app.core import settings
 
-        Args:
-            url: Elasticsearch URL
-            index_name: Name of the index to use
-            vector_dims: Dimension of embedding vectors
-        """
-        self.url = url or getattr(settings, "ELASTICSEARCH_URL", "http://localhost:9200")
-        self.index_name = index_name or getattr(
-            settings, "ELASTICSEARCH_INDEX", "decision_documents"
-        )
-        self.vector_dims = vector_dims
-        self.cert = getattr(settings, "ELASTICSEARCH_CERT", None)
-
-        # Retry tracking
-        self._retry_count = 0
-        self._max_total_retries = getattr(settings, "MAX_TOTAL_RETRIES", 10)
-
-        # Initialize Elasticsearch client
-        try:
-            if (self.cert):
-                self.client = Elasticsearch(
-                    [self.url],
-                    request_timeout=30,
-                    retry_on_timeout=True,
-                    max_retries=3,
-                    ca_certs=self.cert,
-                    basic_auth=(getattr(settings, "ELASTICSEARCH_USER", None), getattr(settings, "ELASTICSEARCH_PASSWORD", None))
-                )
-            else:
-                self.client = Elasticsearch(
-                    [self.url], request_timeout=30, retry_on_timeout=True, max_retries=3
-                )
-
-            # Test connection
-            if not self.client.ping():
-                raise ConnectionError("Failed to connect to Elasticsearch")
-
-            logger.info(f"Connected to Elasticsearch at {self.url}")
-
-            # Create index if it doesn't exist
-            self._create_index_if_not_exists()
-
-        except Exception as e:
-            logger.error(f"Error initializing Elasticsearch client: {e}")
-            raise
+        self._retry_count: int = 0
+        self._max_total_retries: int = getattr(settings, "MAX_TOTAL_RETRIES", 10)
 
     def _increment_retry_count(self) -> None:
         """
-        Increment retry counter and check if max retries exceeded.
+        Increment retry counter and raise if maximum is exceeded.
 
         Raises:
-            MaxRetriesExceededError: If maximum total retries are exceeded
+            MaxRetriesExceededError: If maximum total retries are exceeded.
         """
         self._retry_count += 1
         logger.warning(
-            f"Elasticsearch operation retry {self._retry_count}/{self._max_total_retries}"
+            f"Vector store operation retry {self._retry_count}/{self._max_total_retries}"
         )
-
         if self._retry_count >= self._max_total_retries:
             error_msg = (
                 f"Maximum total retry attempts ({self._max_total_retries}) exceeded "
-                f"for Elasticsearch operations. Consider checking Elasticsearch connection."
+                f"for vector store operations."
             )
             logger.error(error_msg)
             raise MaxRetriesExceededError(error_msg)
 
     def _reset_retry_count(self) -> None:
-        """Reset retry counter after successful operation."""
+        """Reset retry counter after a successful operation."""
         if self._retry_count > 0:
             logger.info(
-                f"Elasticsearch operation successful after {self._retry_count} retries. Resetting counter."
+                f"Vector store operation successful after {self._retry_count} retries. "
+                "Resetting counter."
             )
             self._retry_count = 0
 
-    def _create_index_if_not_exists(self):
-        """Create the index with proper mappings if it doesn't exist."""
-        if self.client.indices.exists(index=self.index_name):
-            logger.info(f"Index '{self.index_name}' already exists")
-            return
+    @abstractmethod
+    def bulk_index_chunks(
+        self, chunks_with_embeddings: List[Dict[str, Any]], batch_size: int = 100
+    ) -> Dict[str, Any]:
+        """Bulk index a list of chunks with embeddings."""
+        ...
 
-        # Define index mappings compatible with Open WebUI structure
-        mappings = {
-            "mappings": {
-                "dynamic_templates": [
-                    {"strings": {"match_mapping_type": "string", "mapping": {"type": "keyword"}}}
-                ],
-                "properties": {
-                    "collection": {"type": "keyword"},
-                    "id": {"type": "keyword"},
-                    "text": {"type": "text"},
-                    "vector": {
-                        "type": "dense_vector",
-                        "dims": self.vector_dims,
-                        "index": True,
-                        "similarity": "cosine",
-                        "index_options": {"type": "bbq_hnsw", "m": 16, "ef_construction": 100},
-                    },
-                    "metadata": {
-                        "properties": {
-                            # Open WebUI standard metadata
-                            "collection_name": {"type": "keyword"},
-                            "file_id": {"type": "keyword"},
-                            "name": {"type": "keyword"},
-                            "source": {"type": "keyword"},
-                            # Decision-specific metadata
-                            "native_id": {"type": "keyword"},
-                            "title": {"type": "keyword"},
-                            "date_decision": {"type": "keyword"},
-                            "section": {"type": "keyword"},
-                            "classification_code": {"type": "keyword"},
-                            "classification_title": {"type": "keyword"},
-                            "case_id": {"type": "keyword"},
-                            "organization_name": {"type": "keyword"},
-                            # Chunk metadata
-                            "chunk_id": {"type": "keyword"},
-                            "chunk_index": {"type": "long"},
-                            "token_count": {"type": "long"},
-                            "chunk_position": {"type": "long"},
-                            "start_index": {"type": "long"},
-                            # Attachment-specific metadata
-                            "is_attachment": {"type": "boolean"},
-                            "attachment_native_id": {"type": "keyword"},
-                            "attachment_title": {"type": "keyword"},
-                            "attachment_number": {"type": "long"},
-                            "attachment_type": {"type": "keyword"},
-                            "attachment_url": {"type": "keyword"},
-                            "decision_native_id": {"type": "keyword"},
-                            # Indexing metadata
-                            "indexed_at": {"type": "date"},
-                        }
-                    },
-                },
-            },
-            "settings": {"number_of_shards": 1, "number_of_replicas": 1},
-        }
+    @abstractmethod
+    def index_chunk(self, chunk_data: Dict[str, Any]) -> bool:
+        """Index a single chunk."""
+        ...
 
-        try:
-            self.client.indices.create(index=self.index_name, body=mappings)
-            logger.info(
-                f"Created index '{self.index_name}' with vector dimensions {self.vector_dims}"
-            )
-        except Exception as e:
-            logger.error(f"Error creating index: {e}")
-            raise
+    @abstractmethod
+    def document_exists(self, native_id: str) -> bool:
+        """Return True if any chunk for *native_id* exists in the store."""
+        ...
+
+    @abstractmethod
+    def delete_document(self, native_id: str) -> int:
+        """Delete all chunks for a document (decision + attachments). Returns deleted count."""
+        ...
+
+    @abstractmethod
+    def delete_attachments(self, decision_native_id: str) -> int:
+        """Delete attachment chunks only for a decision. Returns deleted count."""
+        ...
+
+    @abstractmethod
+    def search(
+        self,
+        query_vector: List[float],
+        top_k: int = 10,
+        filter_conditions: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return top-k results for the given query vector."""
+        ...
+
+    @abstractmethod
+    def get_statistics(self) -> Dict[str, Any]:
+        """Return statistics about the store."""
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release any resources held by the store."""
+        ...
+
+
+class CompositeVectorStore(BaseVectorStore):
+    """
+    Fan-out vector store that delegates to multiple backends.
+
+    Write operations are dispatched to **all** backends sequentially.
+    Read operations are delegated to the **first** backend in the list.
+    Exceptions are propagated rather than suppressed.
+    """
+
+    def __init__(self, backends: List[BaseVectorStore]) -> None:
+        if not backends:
+            raise ValueError("CompositeVectorStore requires at least one backend.")
+        # Do NOT call super().__init__() – the concrete backends manage their own
+        # retry state independently.
+        self.backends = backends
+        self._retry_count = 0
+        self._max_total_retries = 0
 
     def bulk_index_chunks(
         self, chunks_with_embeddings: List[Dict[str, Any]], batch_size: int = 100
     ) -> Dict[str, Any]:
-        """
-        Bulk index chunks with embeddings to Elasticsearch.
-
-        Args:
-            chunks_with_embeddings: List of dictionaries containing chunk data and embeddings
-            batch_size: Number of documents to index per batch
-
-        Returns:
-            Dictionary with indexing statistics
-        """
-        if not chunks_with_embeddings:
-            logger.warning("No chunks provided for indexing")
-            return {"success": 0, "failed": 0, "errors": []}
-
-        logger.info(f"Bulk indexing {len(chunks_with_embeddings)} chunks to '{self.index_name}'")
-
-        # Prepare documents for bulk indexing with Open WebUI structure
-        actions = []
-        for chunk_data in chunks_with_embeddings:
-            # Extract metadata and prepare nested structure
-            metadata = chunk_data.get("metadata", {})
-            metadata.update(
-                {
-                    "chunk_id": chunk_data["chunk_id"],
-                    "native_id": chunk_data["native_id"],
-                    "chunk_index": chunk_data["chunk_index"],
-                    "token_count": chunk_data.get("token_count", 0),
-                    "chunk_position": chunk_data.get("chunk_position", 0),
-                    "indexed_at": datetime.utcnow().isoformat(),
-                }
-            )
-
-            doc = {
-                "_index": self.index_name,
-                "_id": chunk_data["chunk_id"],
-                "_source": {
-                    "collection": getattr(settings, "COLLECTION_NAME", "decisions"),
-                    "id": chunk_data["chunk_id"],
-                    "text": chunk_data["text"],
-                    "vector": chunk_data["embedding"],
-                    "metadata": metadata,
-                },
-            }
-            actions.append(doc)
-
-        # Perform bulk indexing
-        success_count = 0
-        failed_count = 0
-        errors = []
-
-        try:
-            # Use helpers.bulk for efficient bulk indexing
-            success, failed = helpers.bulk(
-                self.client,
-                actions,
-                chunk_size=batch_size,
-                request_timeout=60,
-                raise_on_error=False,
-                stats_only=False,
-            )
-
-            success_count = success
-
-            # Reset retry count on successful operation
-            self._reset_retry_count()
-
-            # Process failures
-            if failed:
-                failed_count = len(failed)
-                for item in failed:
-                    error_msg = str(item)
-                    errors.append(error_msg)
-                    logger.error(f"Failed to index document: {error_msg}")
-
-            logger.info(
-                f"Bulk indexing complete: {success_count} successful, {failed_count} failed"
-            )
-
-        except (ConnectionTimeout, TransportError) as e:
-            # Track retries for connection/timeout errors
-            self._increment_retry_count()
-            logger.error(f"Connection/timeout error during bulk indexing: {e}")
-            errors.append(str(e))
-            failed_count = len(chunks_with_embeddings)
-            raise
-        except MaxRetriesExceededError:
-            # Re-raise max retries exceeded error
-            raise
-        except Exception as e:
-            logger.error(f"Error during bulk indexing: {e}")
-            errors.append(str(e))
-            failed_count = len(chunks_with_embeddings)
-
-        return {
-            "success": success_count,
-            "failed": failed_count,
-            "errors": errors[:10],  # Limit errors in response
-        }
+        result: Dict[str, Any] = {"success": 0, "failed": 0, "errors": []}
+        for backend in self.backends:
+            r = backend.bulk_index_chunks(chunks_with_embeddings, batch_size)
+            result["success"] = max(result["success"], r.get("success", 0))
+            result["failed"] += r.get("failed", 0)
+            result["errors"].extend(r.get("errors", []))
+        return result
 
     def index_chunk(self, chunk_data: Dict[str, Any]) -> bool:
-        """
-        Index a single chunk with embedding.
+        ok = True
+        for backend in self.backends:
+            ok = backend.index_chunk(chunk_data) and ok
+        return ok
 
-        Args:
-            chunk_data: Dictionary containing chunk data and embedding
+    def delete_document(self, native_id: str) -> int:
+        total = 0
+        for backend in self.backends:
+            total += backend.delete_document(native_id)
+        return total
 
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Extract metadata and prepare nested structure
-            metadata = chunk_data.get("metadata", {})
-            metadata.update(
-                {
-                    "chunk_id": chunk_data["chunk_id"],
-                    "native_id": chunk_data["native_id"],
-                    "chunk_index": chunk_data["chunk_index"],
-                    "token_count": chunk_data.get("token_count", 0),
-                    "chunk_position": chunk_data.get("chunk_position", 0),
-                    "indexed_at": datetime.utcnow().isoformat(),
-                }
-            )
+    def delete_attachments(self, decision_native_id: str) -> int:
+        total = 0
+        for backend in self.backends:
+            total += backend.delete_attachments(decision_native_id)
+        return total
 
-            doc = {
-                "collection": chunk_data.get("collection", "decisions"),
-                "id": chunk_data["chunk_id"],
-                "text": chunk_data["text"],
-                "vector": chunk_data["embedding"],
-                "metadata": metadata,
-            }
-
-            self.client.index(index=self.index_name, id=chunk_data["chunk_id"], document=doc)
-
-            # Reset retry count on successful operation
-            self._reset_retry_count()
-
-            logger.debug(f"Indexed chunk: {chunk_data['chunk_id']}")
-            return True
-
-        except (ConnectionTimeout, TransportError) as e:
-            # Track retries for connection/timeout errors
-            self._increment_retry_count()
-            logger.error(f"Connection/timeout error indexing chunk {chunk_data.get('chunk_id')}: {e}")
-            raise
-        except MaxRetriesExceededError:
-            # Re-raise max retries exceeded error
-            raise
-        except Exception as e:
-            logger.error(f"Error indexing chunk {chunk_data.get('chunk_id')}: {e}")
-            return False
+    def document_exists(self, native_id: str) -> bool:
+        return self.backends[0].document_exists(native_id)
 
     def search(
         self,
@@ -339,254 +164,11 @@ class ElasticsearchVectorStore:
         top_k: int = 10,
         filter_conditions: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Search for similar documents using vector similarity.
-
-        Args:
-            query_vector: Query embedding vector
-            top_k: Number of results to return
-            filter_conditions: Optional filters to apply
-
-        Returns:
-            List of matching documents with scores
-        """
-        try:
-            # Build query with Open WebUI structure
-            query = {
-                "knn": {
-                    "field": "vector",
-                    "query_vector": query_vector,
-                    "k": top_k,
-                    "num_candidates": top_k * 10,
-                }
-            }
-
-            # Add filters if provided
-            if filter_conditions:
-                query["filter"] = filter_conditions
-
-            # Execute search
-            response = self.client.search(index=self.index_name, body=query, size=top_k)
-
-            # Reset retry count on successful operation
-            self._reset_retry_count()
-
-            # Extract results from Open WebUI structure
-            results = []
-            for hit in response["hits"]["hits"]:
-                source = hit["_source"]
-                metadata = source.get("metadata", {})
-                result = {
-                    "chunk_id": source.get("id", metadata.get("chunk_id", "")),
-                    "native_id": metadata.get("native_id", ""),
-                    "text": source.get("text", ""),
-                    "score": hit["_score"],
-                    "metadata": metadata,
-                }
-                results.append(result)
-
-            logger.info(f"Search completed: {len(results)} results")
-            return results
-
-        except (ConnectionTimeout, TransportError) as e:
-            # Track retries for connection/timeout errors
-            self._increment_retry_count()
-            logger.error(f"Connection/timeout error during search: {e}")
-            raise
-        except MaxRetriesExceededError:
-            # Re-raise max retries exceeded error
-            raise
-        except Exception as e:
-            logger.error(f"Error searching: {e}")
-            return []
-
-    def delete_document(self, native_id: str) -> int:
-        """
-        Delete all chunks for a document (including attachments).
-
-        Args:
-            native_id: Native ID of the document
-
-        Returns:
-            Number of chunks deleted
-        """
-        try:
-            # Delete decision chunks and attachment chunks
-            # Decision chunks have metadata.native_id == native_id
-            # Attachment chunks have metadata.decision_native_id == native_id
-            response = self.client.delete_by_query(
-                index=self.index_name,
-                body={
-                    "query": {
-                        "bool": {
-                            "should": [
-                                {"term": {"metadata.native_id": native_id}},
-                                {"term": {"metadata.decision_native_id": native_id}},
-                            ]
-                        }
-                    }
-                },
-            )
-
-            # Reset retry count on successful operation
-            self._reset_retry_count()
-
-            deleted_count = response.get("deleted", 0)
-            logger.info(f"Deleted {deleted_count} chunks for document {native_id}")
-            return deleted_count
-
-        except (ConnectionTimeout, TransportError) as e:
-            # Track retries for connection/timeout errors
-            self._increment_retry_count()
-            logger.error(f"Connection/timeout error deleting document {native_id}: {e}")
-            raise
-        except MaxRetriesExceededError:
-            # Re-raise max retries exceeded error
-            raise
-        except Exception as e:
-            logger.error(f"Error deleting document {native_id}: {e}")
-            return 0
-
-    def delete_attachments(self, decision_native_id: str) -> int:
-        """
-        Delete all attachment chunks for a decision.
-
-        Args:
-            decision_native_id: Native ID of the parent decision
-
-        Returns:
-            Number of attachment chunks deleted
-        """
-        try:
-            response = self.client.delete_by_query(
-                index=self.index_name,
-                body={
-                    "query": {
-                        "bool": {
-                            "must": [
-                                {"term": {"metadata.decision_native_id": decision_native_id}},
-                                {"term": {"metadata.is_attachment": True}},
-                            ]
-                        }
-                    }
-                },
-            )
-
-            # Reset retry count on successful operation
-            self._reset_retry_count()
-
-            deleted_count = response.get("deleted", 0)
-            logger.info(
-                f"Deleted {deleted_count} attachment chunks for decision {decision_native_id}"
-            )
-            return deleted_count
-
-        except (ConnectionTimeout, TransportError) as e:
-            # Track retries for connection/timeout errors
-            self._increment_retry_count()
-            logger.error(f"Connection/timeout error deleting attachments for decision {decision_native_id}: {e}")
-            raise
-        except MaxRetriesExceededError:
-            # Re-raise max retries exceeded error
-            raise
-        except Exception as e:
-            logger.error(f"Error deleting attachments for decision {decision_native_id}: {e}")
-            return 0
-
-    def document_exists(self, native_id: str) -> bool:
-        """
-        Check if a document has been indexed.
-
-        Args:
-            native_id: Native ID of the document
-
-        Returns:
-            True if document exists, False otherwise
-        """
-        try:
-            response = self.client.count(
-                index=self.index_name, body={"query": {"term": {"metadata.native_id": native_id}}}
-            )
-
-            # Reset retry count on successful operation
-            self._reset_retry_count()
-
-            count = response.get("count", 0)
-            return count > 0
-
-        except (ConnectionTimeout, TransportError) as e:
-            # Track retries for connection/timeout errors
-            self._increment_retry_count()
-            logger.error(f"Connection/timeout error checking document existence {native_id}: {e}")
-            raise
-        except MaxRetriesExceededError:
-            # Re-raise max retries exceeded error
-            raise
-        except Exception as e:
-            logger.error(f"Error checking document existence {native_id}: {e}")
-            return False
+        return self.backends[0].search(query_vector, top_k, filter_conditions)
 
     def get_statistics(self) -> Dict[str, Any]:
-        """
-        Get statistics about the index.
+        return self.backends[0].get_statistics()
 
-        Returns:
-            Dictionary with index statistics
-        """
-        try:
-            # Get index stats
-            stats = self.client.indices.stats(index=self.index_name)
-
-            # Get document count
-            count_response = self.client.count(index=self.index_name)
-
-            # Get decision count
-            # Get all unique native id values
-            native_ids_response = self.client.search(
-                index=self.index_name,
-                body={
-                    "query": {"match_all": {}},
-                    "fields": ["metadata.native_id"],
-                    "size": 10000, # Maximum number of hits to retrieve
-                    "_source": False,
-                },
-            )
-
-            # Reset retry count on successful operation
-            self._reset_retry_count()
-
-            unique_native_ids = set()
-            for hit in native_ids_response["hits"]["hits"]:
-                fields = hit.get("fields", {})
-                native_id_values = fields.get("metadata.native_id", [])
-                for nid in native_id_values:
-                    unique_native_ids.add(nid)
-
-            return {
-                "index_name": self.index_name,
-                "total_chunks": count_response.get("count", 0),
-                "size_bytes": stats["indices"][self.index_name]["total"]["store"]["size_in_bytes"],
-                "size_mb": stats["indices"][self.index_name]["total"]["store"]["size_in_bytes"]
-                / (1024 * 1024),
-                "total_decisions": len(unique_native_ids),
-            }
-
-        except (ConnectionTimeout, TransportError) as e:
-            # Track retries for connection/timeout errors
-            self._increment_retry_count()
-            logger.error(f"Connection/timeout error getting statistics: {e}")
-            raise
-        except MaxRetriesExceededError:
-            # Re-raise max retries exceeded error
-            raise
-        except Exception as e:
-            logger.error(f"Error getting statistics: {e}")
-            return {"index_name": self.index_name, "error": str(e)}
-
-    def close(self):
-        """Close the Elasticsearch client connection."""
-        try:
-            self.client.close()
-            logger.info("Elasticsearch connection closed")
-        except Exception as e:
-            logger.error(f"Error closing Elasticsearch connection: {e}")
+    def close(self) -> None:
+        for backend in self.backends:
+            backend.close()

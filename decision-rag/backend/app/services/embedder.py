@@ -43,7 +43,6 @@ class AzureEmbedder:
         model: str = None,
         dimension: int = None,
         batch_size: int = None,
-        max_retries: int = 3,
     ):
         """
         Initialize Azure OpenAI embedder.
@@ -55,7 +54,6 @@ class AzureEmbedder:
             model: Embedding model name (default: text-embedding-3-large)
             dimension: Dimension of the embeddings
             batch_size: Number of texts to embed per API request (default from settings)
-            max_retries: Maximum number of retries on failure
         """
         self.endpoint = endpoint or getattr(settings, "AZURE_OPENAI_ENDPOINT", "")
         self.api_key = api_key or getattr(settings, "AZURE_OPENAI_API_KEY", "")
@@ -68,7 +66,6 @@ class AzureEmbedder:
         self.dimension = dimension or getattr(settings, "EMBEDDING_DIMENSION", 3072)
         # Use configured batch size from settings, default to 100
         self.batch_size = batch_size or getattr(settings, "EMBEDDING_BATCH_SIZE", 100)
-        self.max_retries = max_retries
 
         # Validate configuration
         if not self.endpoint or not self.api_key:

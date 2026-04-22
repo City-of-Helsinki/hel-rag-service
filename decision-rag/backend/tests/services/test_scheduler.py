@@ -151,7 +151,7 @@ class TestSchedulerStateManager:
         state_manager.load_state()
 
         # Add more than MAX_HISTORY_SIZE records
-        for i in range(150):
+        for _i in range(150):
             state_manager.add_execution_record(status="success")
 
         state = state_manager.get_state()

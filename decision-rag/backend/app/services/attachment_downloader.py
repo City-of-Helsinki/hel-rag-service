@@ -31,7 +31,6 @@ class AttachmentDownloader:
         self,
         timeout: int = None,
         rate_limit: float = None,
-        max_retries: int = None,
     ):
         """
         Initialize attachment downloader.
@@ -39,11 +38,13 @@ class AttachmentDownloader:
         Args:
             timeout: HTTP request timeout in seconds
             rate_limit: Requests per second limit
-            max_retries: Maximum number of retry attempts
         """
         self.timeout = timeout or getattr(settings, "ATTACHMENT_TIMEOUT", 60)
+        if rate_limit is not None and rate_limit <= 0:
+            raise ValueError("Rate limit must be a positive number")
+        if getattr(settings, "REQUESTS_PER_SECOND", 5.0) <= 0:
+            raise ValueError("REQUESTS_PER_SECOND must be greater than 0")
         self.rate_limit_delay = 1.0 / (rate_limit or getattr(settings, "REQUESTS_PER_SECOND", 5.0))
-        self.max_retries = max_retries or getattr(settings, "MAX_RETRY_ATTEMPTS", 3)
         self.last_request_time = 0
         self._rate_limit_lock = threading.Lock()  # Thread-safe rate limiting
 

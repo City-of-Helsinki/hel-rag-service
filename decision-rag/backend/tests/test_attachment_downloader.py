@@ -14,7 +14,7 @@ from app.services.attachment_downloader import AttachmentDownloader
 @pytest.fixture
 def downloader():
     """Create attachment downloader instance."""
-    return AttachmentDownloader(timeout=30, rate_limit=10.0, max_retries=2)
+    return AttachmentDownloader(timeout=30, rate_limit=10.0)
 
 
 @pytest.fixture

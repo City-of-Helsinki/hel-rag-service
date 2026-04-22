@@ -18,7 +18,8 @@ from app.api.v1.models.responses import (
 )
 from app.core import get_logger
 from app.repositories import DecisionRepository
-from app.services import AzureEmbedder, ElasticsearchVectorStore
+from app.services import AzureEmbedder
+from app.services.vector_store import BaseVectorStore
 from app.utils import raise_error_with_id
 
 router = APIRouter()
@@ -66,10 +67,9 @@ async def list_documents(
                     DocumentSummary(
                         native_id=doc.NativeId,
                         title=doc.Title or "Untitled",
-                        decision_date=doc.DecisionDate,
+                        decision_date=doc.DateDecision,
                         organization=doc.Organization.Name if doc.Organization else None,
-                        classification=doc.Classification,
-                        subject=doc.Subject,
+                        classification=doc.ClassificationTitle,
                     )
                 )
 
@@ -83,7 +83,9 @@ async def list_documents(
 
     except Exception as e:
         raise_error_with_id(
-            logger, e, status_code=500,
+            logger,
+            e,
+            status_code=500,
             message="Failed to list documents",
             context={"operation": "list_documents", "page": page, "page_size": page_size},
         )
@@ -130,7 +132,7 @@ async def get_document(
         organization = None
         if doc.Organization:
             organization = {
-                "id": doc.Organization.Id,
+                "id": doc.Organization.ID,
                 "name": doc.Organization.Name,
             }
 
@@ -138,16 +140,13 @@ async def get_document(
             native_id=doc.NativeId,
             title=doc.Title or "Untitled",
             content=doc.Content or "",
-            decision_date=doc.DecisionDate,
+            decision_date=doc.DateDecision,
             organization=organization,
-            classification=doc.Classification,
-            subject=doc.Subject,
+            classification=doc.ClassificationTitle,
             attachments=attachments,
             metadata={
-                "diary_number": doc.DiaryNumber,
-                "decision_maker": doc.Decisionmaker,
+                "diary_number": doc.CaseID,
                 "section": doc.Section,
-                "language": doc.Language,
             },
         )
 
@@ -155,7 +154,9 @@ async def get_document(
         raise
     except Exception as e:
         raise_error_with_id(
-            logger, e, status_code=500,
+            logger,
+            e,
+            status_code=500,
             message="Failed to retrieve document",
             context={"operation": "get_document", "native_id": native_id},
         )
@@ -165,7 +166,7 @@ async def get_document(
 async def search_documents(
     request: SearchRequest,
     embedder: AzureEmbedder = Depends(get_embedder),
-    vector_store: ElasticsearchVectorStore = Depends(get_vector_store),
+    vector_store: BaseVectorStore = Depends(get_vector_store),
     _: None = Depends(verify_api_key),
 ):
     """
@@ -182,7 +183,7 @@ async def search_documents(
     """
     try:
         # Generate embedding for query
-        query_embedding = embedder.embed_text(request.query)
+        query_embedding = embedder.create_embedding(request.query)
 
         # Build filter conditions if provided
         filter_conditions = None
@@ -231,7 +232,9 @@ async def search_documents(
 
     except Exception as e:
         raise_error_with_id(
-            logger, e, status_code=500,
+            logger,
+            e,
+            status_code=500,
             message="Search operation failed",
             context={"operation": "search_documents", "query": request.query},
         )
@@ -261,7 +264,9 @@ async def get_repository_stats(
 
     except Exception as e:
         raise_error_with_id(
-            logger, e, status_code=500,
+            logger,
+            e,
+            status_code=500,
             message="Failed to retrieve repository statistics",
             context={"operation": "get_repository_stats"},
         )
@@ -269,44 +274,31 @@ async def get_repository_stats(
 
 @router.get("/vector-store/stats", response_model=VectorStoreStatsResponse)
 async def get_vector_store_stats(
-    vector_store: ElasticsearchVectorStore = Depends(get_vector_store),
+    vector_store: BaseVectorStore = Depends(get_vector_store),
     _: None = Depends(verify_api_key),
 ):
     """
     Get vector store statistics.
 
-    Returns information about the Elasticsearch index and stored embeddings.
+    Returns information about the vector store instance and stored embeddings.
 
     Returns:
         Vector store statistics
     """
     try:
-        # Get index stats
-        stats = vector_store.client.indices.stats(index=vector_store.index_name)
-        index_stats = stats["indices"].get(vector_store.index_name, {})
-
-        # Get document count
-        count_response = vector_store.client.count(index=vector_store.index_name)
-        total_chunks = count_response.get("count", 0)
-
-        # Get index size
-        total_size_bytes = index_stats.get("total", {}).get("store", {}).get("size_in_bytes", 0)
-        index_size_mb = total_size_bytes / (1024 * 1024)
-
-        # Get index health
-        health = vector_store.client.cluster.health(index=vector_store.index_name)
-        status = health.get("status", "unknown")
-
+        stats = vector_store.get_statistics()
         return VectorStoreStatsResponse(
-            index_name=vector_store.index_name,
-            total_chunks=total_chunks,
-            index_size_mb=index_size_mb,
-            status=status,
+            instance=stats["instance"],
+            index_name=stats["index_name"],
+            total_chunks=stats["total_chunks"],
+            index_size_mb=stats["size_mb"],
         )
 
     except Exception as e:
         raise_error_with_id(
-            logger, e, status_code=500,
+            logger,
+            e,
+            status_code=500,
             message="Failed to retrieve vector store statistics",
             context={"operation": "get_vector_store_stats"},
         )
