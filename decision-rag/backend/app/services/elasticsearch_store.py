@@ -229,7 +229,6 @@ class ElasticsearchVectorStore(BaseVectorStore):
             self._increment_retry_count()
             logger.error(f"Connection/timeout error during bulk indexing: {e}")
             errors.append(str(e))
-            failed_count = len(chunks_with_embeddings)
             raise
         except MaxRetriesExceededError:
             raise

@@ -187,7 +187,6 @@ class PgvectorVectorStore(BaseVectorStore):
             self._increment_retry_count()
             logger.error(f"pgvector connection error during bulk indexing: {e}")
             errors.append(str(e))
-            failed_count = len(chunks_with_embeddings) - success_count
             raise
         except MaxRetriesExceededError:
             self.conn.rollback()

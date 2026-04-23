@@ -134,7 +134,6 @@ def get_vector_store() -> Generator[BaseVectorStore, None, None]:
     finally:
         for s in store.backends if isinstance(store, CompositeVectorStore) else [store]:
             s.close()
-        pass
 
 
 def get_elasticsearch_store() -> Generator[ElasticsearchVectorStore, None, None]:

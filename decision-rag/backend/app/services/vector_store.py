@@ -65,27 +65,27 @@ class BaseVectorStore(ABC):
         self, chunks_with_embeddings: List[Dict[str, Any]], batch_size: int = 100
     ) -> Dict[str, Any]:
         """Bulk index a list of chunks with embeddings."""
-        ...
+        raise NotImplementedError("bulk_index_chunks must be implemented by subclasses")
 
     @abstractmethod
     def index_chunk(self, chunk_data: Dict[str, Any]) -> bool:
         """Index a single chunk."""
-        ...
+        raise NotImplementedError("index_chunk must be implemented by subclasses")
 
     @abstractmethod
     def document_exists(self, native_id: str) -> bool:
         """Return True if any chunk for *native_id* exists in the store."""
-        ...
+        raise NotImplementedError("document_exists must be implemented by subclasses")
 
     @abstractmethod
     def delete_document(self, native_id: str) -> int:
         """Delete all chunks for a document (decision + attachments). Returns deleted count."""
-        ...
+        raise NotImplementedError("delete_document must be implemented by subclasses")
 
     @abstractmethod
     def delete_attachments(self, decision_native_id: str) -> int:
         """Delete attachment chunks only for a decision. Returns deleted count."""
-        ...
+        raise NotImplementedError("delete_attachments must be implemented by subclasses")
 
     @abstractmethod
     def search(
@@ -95,17 +95,17 @@ class BaseVectorStore(ABC):
         filter_conditions: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Return top-k results for the given query vector."""
-        ...
+        raise NotImplementedError("search must be implemented by subclasses")
 
     @abstractmethod
     def get_statistics(self) -> Dict[str, Any]:
         """Return statistics about the store."""
-        ...
+        raise NotImplementedError("get_statistics must be implemented by subclasses")
 
     @abstractmethod
     def close(self) -> None:
         """Release any resources held by the store."""
-        ...
+        raise NotImplementedError("close must be implemented by subclasses")
 
 
 class CompositeVectorStore(BaseVectorStore):
