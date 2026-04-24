@@ -42,6 +42,27 @@ class HTMLSanitizer:
         """
         return html_content.replace("\\", "")
 
+    def _remove_noise_elements(self, html_content: str) -> str:
+        """
+        Remove noise elements from HTML content.
+
+        Removes image tags (to avoid conversion issues) and appeal instruction
+        sections (class 'MuutoksenhakuohjeetSektio'), which are boilerplate
+        text repeated across all decisions and irrelevant for RAG search.
+
+        Args:
+            html_content: HTML content to clean
+
+        Returns:
+            HTML content with noise elements removed
+        """
+        soup = BeautifulSoup(html_content, "html.parser")
+        for img in soup.find_all("img"):
+            img.decompose()
+        for section in soup.find_all("section", class_="MuutoksenhakuohjeetSektio"):
+            section.decompose()
+        return str(soup)
+
     def _is_valid_html(self, html_content: str) -> bool:
         """
         Check if HTML is well-formed and valid.
@@ -80,17 +101,15 @@ class HTMLSanitizer:
             Sanitized HTML string
         """
         try:
-            # Delete image tags to avoid conversion issues
-            soup = BeautifulSoup(html_content, "html.parser")
-            for img in soup.find_all("img"):
-                img.decompose()
-            html_content = str(soup)
-
             # Parse HTML with html5lib (most lenient parser)
             doc = self.parser.parse(html_content)
 
             # Serialize back to HTML string
             sanitized = ET.tostring(doc, encoding="unicode", method="html")
+
+            # Remove noise elements before returning
+            logger.info("Removing noise elements from sanitized HTML")
+            sanitized = self._remove_noise_elements(sanitized)
 
             logger.info("HTML library sanitization completed successfully")
             return sanitized
@@ -125,11 +144,11 @@ class HTMLSanitizer:
             # Step 2: Check if HTML is now valid
             if self._is_valid_html(cleaned_html):
                 logger.info("HTML is valid after backslash removal")
-                # Remove image tags for cleaner conversion
-                soup = BeautifulSoup(cleaned_html, "html.parser")
-                for img in soup.find_all("img"):
-                    img.decompose()
-                return str(soup)
+
+                # Remove noise elements before returning
+                logger.info("Removing noise elements from HTML")
+                cleaned_html = self._remove_noise_elements(cleaned_html)
+                return cleaned_html
 
             # Step 3: If still invalid, use external library sanitization
             logger.info("HTML still invalid, using library sanitization")

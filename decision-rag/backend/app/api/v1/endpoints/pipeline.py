@@ -461,7 +461,7 @@ def run_full_pipeline_job(
                 return not pipeline.vector_store.document_exists(native_id)
 
         # Stream documents from fetcher with optional filtering
-        for document in fetcher.fetch_all_decisions(
+        for document, batch_start, batch_end in fetcher.fetch_all_decisions(
             settings.API_KEY, start, end, id_filter=id_filter
         ):
             # Check for shutdown request
@@ -513,7 +513,7 @@ def run_full_pipeline_job(
                 )
 
                 # Process the batch
-                batch_stats = pipeline.process_batch(batch_native_ids, reindex=not request.skip_existing)
+                batch_stats = pipeline.process_batch(batch_native_ids, reindex=not request.skip_existing, batch_start=batch_start, batch_end=batch_end)
 
                 stats["total_processed"] += batch_stats["processed"]
                 stats["total_successful"] += batch_stats["successful"]
@@ -569,7 +569,7 @@ def run_full_pipeline_job(
             logger.info(f"Processing final batch of {len(batch_buffer)} documents")
             job_manager.update_progress(job_id, 95, "Processing final batch...")
 
-            batch_stats = pipeline.process_batch(batch_native_ids, reindex=not request.skip_existing)
+            batch_stats = pipeline.process_batch(batch_native_ids, reindex=not request.skip_existing, batch_start=batch_start, batch_end=batch_end)
 
             stats["total_processed"] += batch_stats["processed"]
             stats["total_successful"] += batch_stats["successful"]

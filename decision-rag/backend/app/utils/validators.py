@@ -10,7 +10,7 @@ from typing import Optional
 from ..schemas.decision import DecisionDocument
 
 
-def validate_native_id(native_id: str) -> bool:
+def validate_native_id(native_id: str | None) -> bool:
     """
     Validate decision NativeId format.
 

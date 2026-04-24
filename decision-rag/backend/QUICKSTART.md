@@ -1,130 +1,215 @@
 # Quick Start Guide
 
-## Initial Setup
+## 1. Install and configure
 
-1. **Navigate to backend directory**:
-   ```bash
-   cd backend
-   ```
-
-2. **Run setup script** (Unix/macOS):
-   ```bash
-   chmod +x setup.sh
-   ./setup.sh
-   ```
-
-   Or manually:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-
-3. **Verify installation**:
-   ```bash
-   python pipeline.py version
-   ```
-
-## Basic Usage
-
-### Full Pipeline (Recommended)
-
-The easiest way to get started - fetch, process, and index documents in one command:
+**Navigate to the backend directory** and run the setup script:
 
 ```bash
-# Run complete pipeline with default settings
-python pipeline.py full-pipeline
-
-# Process specific date range
-python pipeline.py full-pipeline --start-date 2024-01-01 --end-date 2024-12-31
-
-# Resume interrupted pipeline
-python pipeline.py full-pipeline --resume
-
-# Small batch for testing (processes 10 docs, keeps files for inspection)
-python pipeline.py full-pipeline --batch-size 10 --keep-files --log-level DEBUG
+cd backend
+chmod +x setup.sh
+./setup.sh
 ```
 
-**What it does:**
-1. Fetches decisions from the API
-2. Converts HTML to Markdown
-3. Chunks text intelligently
-4. Generates embeddings with Azure OpenAI
-5. Indexes to Elasticsearch
-6. Automatically cleans up temporary files
+This creates a virtual environment, installs dependencies, and copies `.env.example` to `.env`.
 
-### Fetch Data (Alternative)
-
-If you prefer to fetch and process separately:
+Or manually:
 
 ```bash
-# Fetch all data (uses START_DATE from config, typically 2017-01-01)
-python pipeline.py fetch
-
-# Fetch specific date range
-python pipeline.py fetch --start-date 2024-01-01 --end-date 2024-12-31
-
-# Resume interrupted fetch
-python pipeline.py fetch --resume
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### Ingest Data (After Fetching)
-
-Process already-fetched documents:
+**Edit `.env`** to set the required values before starting:
 
 ```bash
-# Ingest all fetched documents
-python pipeline.py ingest
+# Source API
+API_BASE_URL=https://...
+API_KEY=your-api-key
+DECISION_IDS_ENDPOINT=/path/to/ids
+DECISION_DOCUMENT_ENDPOINT=/path/to/documents
 
-# Ingest with custom batch size
-python pipeline.py ingest --batch-size 100
+# Azure OpenAI (for embedding generation)
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_API_KEY=your-openai-key
+
+# Vector store (choose one or both)
+ELASTICSEARCH_URL=http://localhost:9200
+# PGVECTOR_HOST=localhost
 ```
 
-### Monitor Progress
+See `.env.example` for all available options.
+
+## 2. Start the server
 
 ```bash
-# View statistics
-python pipeline.py stats
+# Development (auto-reload on file changes)
+python main.py
 
-# View vector store statistics
-python pipeline.py vector-store-stats
+# Or with uvicorn directly
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
 
-# Validate data
-python pipeline.py validate
+Once running, open the interactive API docs to explore all endpoints:
+
+- **Swagger UI**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+- **Health check**: http://localhost:8000/api/v1/health
+
+## 3. Ingest data
+
+All pipeline operations are triggered via the REST API. Jobs run asynchronously in the background — each call returns a `job_id` you can use to monitor progress.
+
+### Full pipeline (recommended)
+
+Fetches decisions from the source API, converts HTML to Markdown, generates embeddings, and indexes to the vector store in one streaming operation:
+
+```bash
+# Run with defaults (date range is set dynamically in config)
+curl -X POST http://localhost:8000/api/v1/pipeline/full
+
+# Specific date range
+curl -X POST http://localhost:8000/api/v1/pipeline/full \
+  -H "Content-Type: application/json" \
+  -d '{"start_date": "2024-01-01", "end_date": "2024-12-31"}'
+
+# Skip documents already in the vector store
+curl -X POST http://localhost:8000/api/v1/pipeline/full \
+  -H "Content-Type: application/json" \
+  -d '{"skip_existing": true}'
+
+# Resume an interrupted run
+curl -X POST http://localhost:8000/api/v1/pipeline/full \
+  -H "Content-Type: application/json" \
+  -d '{"resume": true}'
+```
+
+### Fetch only
+
+Fetches documents from the source API and saves them locally without processing:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/pipeline/fetch
+
+# With options
+curl -X POST http://localhost:8000/api/v1/pipeline/fetch \
+  -H "Content-Type: application/json" \
+  -d '{"start_date": "2024-01-01", "end_date": "2024-12-31", "resume": true}'
+```
+
+### Ingest only
+
+Processes locally stored documents (convert, chunk, embed, index). Use this after a standalone fetch:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/pipeline/ingest
+
+# Force reindex documents already in the vector store
+curl -X POST http://localhost:8000/api/v1/pipeline/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"reindex": true, "batch_size": 100}'
+```
+
+### Monitor job progress
+
+Each pipeline call returns a `job_id`. Poll it to check status:
+
+```bash
+# Check a specific job
+curl http://localhost:8000/api/v1/pipeline/jobs/{job_id}
+
+# List all jobs
+curl http://localhost:8000/api/v1/pipeline/jobs
+```
+
+## 4. Monitor and manage
+
+```bash
+# Detailed health check (vector store, embeddings, API connectivity)
+curl http://localhost:8000/api/v1/health/detailed
+
+# Repository statistics (locally stored documents)
+curl http://localhost:8000/api/v1/data/stats
+
+# Vector store statistics
+curl http://localhost:8000/api/v1/data/vector-store/stats
+
+# List stored documents (paginated)
+curl "http://localhost:8000/api/v1/data/documents?page=1&page_size=50"
 
 # Check logs
 tail -f data/logs/pipeline.log
 ```
 
-## Common Commands
+### Clear data (admin)
 
 ```bash
-# Development
-pytest                          # Run tests
-pytest --cov=app               # Run tests with coverage
-black app/ tests/              # Format code
-ruff check app/                # Lint code
+# Clear fetch checkpoint (allows restarting from scratch)
+curl -X DELETE http://localhost:8000/api/v1/admin/checkpoint
 
-# Data management
-python pipeline.py clear-checkpoint  # Clear checkpoint
-python pipeline.py clear-repository  # Clear checkpoint and fetched decisions
-python pipeline.py validate          # Validate stored data
-python pipeline.py version           # Display version
+# Clear all locally stored documents (irreversible — requires confirm=true)
+curl -X DELETE "http://localhost:8000/api/v1/admin/repository?confirm=true"
+
+# Clear the Elasticsearch vector store (irreversible — requires confirm=true)
+curl -X DELETE "http://localhost:8000/api/v1/admin/vector-store/elasticsearch?confirm=true"
 ```
 
-## Configuration
+## Optional API authentication
 
-Edit `.env` file to customize:
-- API rate limits
-- Batch sizes
-- Storage locations
-- Logging levels
+To secure endpoints in non-local environments:
+
+```bash
+# .env
+API_AUTH_ENABLED=true
+API_AUTH_KEY=your-secure-key  # Generate with: openssl rand -hex 32
+```
+
+Include the key in all requests:
+
+```bash
+curl -H "X-API-Key: your-api-key" http://localhost:8000/api/v1/pipeline/full
+```
+
+Health endpoints (`/health`, `/health/detailed`, `/scheduler/health`) do not require authentication.
+
+## Automated scheduling
+
+The scheduler runs the full pipeline automatically at a configured interval:
+
+```bash
+# .env
+SCHEDULER_ENABLED=true
+SCHEDULER_INTERVAL_HOURS=24
+SCHEDULER_START_TIME=02:00        # Optional: specific time (HH:MM)
+SCHEDULER_TIMEZONE=Europe/Helsinki
+```
+
+Control the scheduler while the server is running:
+
+```bash
+curl http://localhost:8000/api/v1/scheduler/status
+curl -X POST http://localhost:8000/api/v1/scheduler/trigger  # Run now
+curl -X POST http://localhost:8000/api/v1/scheduler/pause
+curl -X POST http://localhost:8000/api/v1/scheduler/resume
+```
+
+## Development
+
+```bash
+pytest                           # Run all tests
+pytest --cov=app                 # Run tests with coverage report
+
+black app/ tests/                # Format code
+ruff check app/ tests/           # Lint code
+mypy app/                        # Type checking
+```
 
 ## Troubleshooting
 
-- **Connection issues**: Check network and API availability
-- **Rate limiting**: Decrease `REQUESTS_PER_SECOND` in .env
-- **Interrupted fetch**: Use `--resume` flag
-- **Logs**: Check `logs/` directory for detailed information
+- **Server won't start**: Check that `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and `ELASTICSEARCH_URL` are set in `.env`
+- **Jobs failing**: Check `data/logs/pipeline.log` and `data/logs/errors.log` for details
+- **Rate limit errors**: Decrease `REQUESTS_PER_SECOND` in `.env`
+- **Interrupted pipeline**: Trigger a new run with `"resume": true` in the request body
 
-For detailed documentation, see [README.md](README.md)
+For full documentation, see [README.md](README.md)

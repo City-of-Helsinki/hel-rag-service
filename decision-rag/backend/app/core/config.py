@@ -40,22 +40,46 @@ class Settings(BaseSettings):
     DOCUMENT_FETCH_RETRY_BACKOFF_MULTIPLIER: float = 3.0  # Exponential backoff multiplier
     DOCUMENT_FETCH_RETRY_STAGGER_DELAY: float = 2.0  # Delay between initiating retries for different documents
 
-    # Date range configuration
-    START_DATE: str = "2025-01-01T00:00:00.000"
+    # API outage batch-level retry configuration
+    API_OUTAGE_MAX_RETRIES: int = 5  # Maximum number of batch retry attempts
+    API_OUTAGE_INITIAL_WAIT: float = 60.0  # Initial wait time before first retry (seconds)
+    API_OUTAGE_MAX_WAIT: float = 600.0  # Maximum wait time between retries (seconds)
+    API_OUTAGE_BACKOFF_MULTIPLIER: float = 2.0  # Exponential backoff multiplier
 
-    # End date is 38 days before current date
+    # Date range configuration
+    # Data is fetched currently daily, and we need to ensure that the data is no newer than 38 days old because of personally identifiable information (PII) removal
+    @property
+    def START_DATE(self) -> str:
+        """Calculate start date as 39 days before current date. Set time to 00:00:00 to ensure we capture all documents from that day."""
+        start = datetime.now() - timedelta(days=39)
+        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start.strftime("%Y-%m-%dT%H:%M:%S")
+
     @property
     def END_DATE(self) -> str:
-        """Calculate end date as 38 days before current date."""
+        """Calculate end date as 38 days before current date. Set time to 23:59:59 to ensure we capture all documents from that day."""
         end = datetime.now() - timedelta(days=38)
+        end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
         return end.strftime("%Y-%m-%dT%H:%M:%S")
 
-    BATCH_SIZE_DAYS: int = 7  # Weekly batches
+    BATCH_SIZE_DAYS: int = 1  # Daily batches
 
     # Storage configuration
     DATA_DIR: str = "data"
     DECISIONS_DIR: str = "data/decisions"
     CHECKPOINT_FILE: str = "data/checkpoint.json"
+
+    # Azure Blob Storage — raw response archival
+    AZURE_BLOB_RAW_RESPONSES_ENABLED: bool = False
+    AZURE_BLOB_ACCOUNT_URL: str = ""
+    AZURE_BLOB_CONNECTION_STRING: str = ""  # Alternative to account URL + managed identity
+    AZURE_BLOB_CONTAINER_NAME: str = "decisions"
+    AZURE_BLOB_BLOB_PREFIX: str = "api_responses"
+
+    # Azure Blob Storage — embedding Parquet export
+    AZURE_BLOB_EMBEDDINGS_ENABLED: bool = False
+    AZURE_BLOB_EMBEDDINGS_CONTAINER_NAME: str = "decision-embeddings"
+    AZURE_BLOB_EMBEDDINGS_BLOB_PREFIX: str = "embeddings"
 
     # Checkpoint configuration
     CHECKPOINT_INTERVAL_FETCH: int = 50  # Save checkpoint every N documents during fetch
@@ -104,6 +128,17 @@ class Settings(BaseSettings):
     ELASTICSEARCH_USER: str = ""
     ELASTICSEARCH_PASSWORD: str = ""
 
+    # Vector store backend selection
+    VECTOR_STORE_BACKENDS: list[str] = ["elasticsearch"]
+
+    # pgvector configuration
+    PGVECTOR_HOST: str = "localhost"
+    PGVECTOR_PORT: int = 5432
+    PGVECTOR_DB: str = "postgres"
+    PGVECTOR_USER: str = ""
+    PGVECTOR_PASSWORD: str = ""
+    PGVECTOR_TABLE: str = "document_chunk"
+
     # Chunking configuration
     EMBED_METADATA_IN_CHUNKS: bool = True  # Feature flag for metadata embedding
     METADATA_HEADER_OVERHEAD_TOKENS: int = 250  # Expected token overhead for headers
@@ -142,6 +177,12 @@ class Settings(BaseSettings):
     SCHEDULER_KEEP_FILES: bool = False
     SCHEDULER_STATE_FILE: str = "data/scheduler_state.json"
     SCHEDULER_LOG_FILE: str = "scheduler.log"
+
+    # Sentry Configuration
+    SENTRY_ENABLED: bool = False
+    SENTRY_DSN: str = ""
+    SENTRY_ENVIRONMENT: str = "development"
+    SENTRY_AUTH_TOKEN: str = ""
 
     class Config:
         env_file = ".env"

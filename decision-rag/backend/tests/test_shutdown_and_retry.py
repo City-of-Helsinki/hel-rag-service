@@ -6,8 +6,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.services.elasticsearch_store import ElasticsearchVectorStore
 from app.services.job_manager import JobManager
-from app.services.vector_store import ElasticsearchVectorStore, MaxRetriesExceededError
+from app.services.vector_store import MaxRetriesExceededError
 
 
 class TestJobManagerShutdown:
@@ -47,7 +48,7 @@ class TestJobManagerShutdown:
 class TestElasticsearchRetryTracking:
     """Test Elasticsearch retry tracking functionality."""
 
-    @patch("app.services.vector_store.Elasticsearch")
+    @patch("app.services.elasticsearch_store.Elasticsearch")
     def test_retry_count_initialization(self, mock_es_class):
         """Test that retry counter is initialized correctly."""
         mock_es_instance = MagicMock()
@@ -60,7 +61,7 @@ class TestElasticsearchRetryTracking:
         assert store._retry_count == 0
         assert store._max_total_retries > 0
 
-    @patch("app.services.vector_store.Elasticsearch")
+    @patch("app.services.elasticsearch_store.Elasticsearch")
     def test_increment_retry_count(self, mock_es_class):
         """Test retry counter increment."""
         mock_es_instance = MagicMock()
@@ -78,7 +79,7 @@ class TestElasticsearchRetryTracking:
         store._increment_retry_count()
         assert store._retry_count == 2
 
-    @patch("app.services.vector_store.Elasticsearch")
+    @patch("app.services.elasticsearch_store.Elasticsearch")
     def test_max_retries_exceeded_error(self, mock_es_class):
         """Test that MaxRetriesExceededError is raised when limit reached."""
         mock_es_instance = MagicMock()
@@ -96,7 +97,7 @@ class TestElasticsearchRetryTracking:
 
         assert "Maximum total retry attempts" in str(exc_info.value)
 
-    @patch("app.services.vector_store.Elasticsearch")
+    @patch("app.services.elasticsearch_store.Elasticsearch")
     def test_reset_retry_count(self, mock_es_class):
         """Test that retry counter resets after successful operation."""
         mock_es_instance = MagicMock()
@@ -137,7 +138,7 @@ class TestIntegration:
         # In actual implementation, running jobs would check this flag
         # and stop at the next checkpoint
 
-    @patch("app.services.vector_store.Elasticsearch")
+    @patch("app.services.elasticsearch_store.Elasticsearch")
     def test_retry_tracking_across_operations(self, mock_es_class):
         """Test that retry tracking persists across multiple operations."""
         mock_es_instance = MagicMock()
@@ -149,7 +150,7 @@ class TestIntegration:
         store._max_total_retries = 10
 
         # Simulate multiple failed operations
-        for i in range(3):
+        for _i in range(3):
             store._increment_retry_count()
 
         assert store._retry_count == 3

@@ -207,3 +207,57 @@ class TestAttachmentConversion:
 
         # Should return empty string on error
         assert result == ""
+
+
+class TestAppealSectionRemoval:
+    """Tests for removal of MuutoksenhakuohjeetSektio sections."""
+
+    def test_removes_muutoksenhakuohjeet_section(self):
+        """Appeal section is absent from output after sanitization."""
+        sanitizer = HTMLSanitizer()
+        html = (
+            "<html><body>"
+            "<section class=\"MuutoksenhakuohjeetSektio\"><p>Appeal instructions</p></section>"
+            "<p>Other content</p>"
+            "</body></html>"
+        )
+        result = sanitizer.sanitize(html)
+        assert "MuutoksenhakuohjeetSektio" not in result
+        assert "Appeal instructions" not in result
+        assert "Other content" in result
+
+    def test_keeps_other_sections_intact(self):
+        """Non-appeal sections are preserved after sanitization."""
+        sanitizer = HTMLSanitizer()
+        html = (
+            "<html><body>"
+            "<section class=\"SisaltoSektio\"><p>Decision text</p></section>"
+            "<section class=\"MuutoksenhakuohjeetSektio\"><p>Appeal boilerplate</p></section>"
+            "</body></html>"
+        )
+        result = sanitizer.sanitize(html)
+        assert "SisaltoSektio" in result
+        assert "Decision text" in result
+        assert "Appeal boilerplate" not in result
+
+    def test_no_appeal_section_present(self):
+        """HTML without any appeal section passes through unchanged."""
+        sanitizer = HTMLSanitizer()
+        html = "<html><body><p>Just a paragraph</p></body></html>"
+        result = sanitizer.sanitize(html)
+        assert "Just a paragraph" in result
+
+    def test_multiple_appeal_sections_removed(self):
+        """All appeal section instances are removed when more than one exists."""
+        sanitizer = HTMLSanitizer()
+        html = (
+            "<html><body>"
+            "<section class=\"MuutoksenhakuohjeetSektio\"><p>First appeal block</p></section>"
+            "<p>Middle content</p>"
+            "<section class=\"MuutoksenhakuohjeetSektio\"><p>Second appeal block</p></section>"
+            "</body></html>"
+        )
+        result = sanitizer.sanitize(html)
+        assert "First appeal block" not in result
+        assert "Second appeal block" not in result
+        assert "Middle content" in result

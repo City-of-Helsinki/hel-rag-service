@@ -10,12 +10,12 @@ class FetchRequest(BaseModel):
 
     start_date: Optional[str] = Field(
         None,
-        description="Start date in YYYY-MM-DD format (defaults to 2017-01-01)",
+        description="Start date in YYYY-MM-DD format (defaults to settings.START_DATE)",
         example="2025-01-01",
     )
     end_date: Optional[str] = Field(
         None,
-        description="End date in YYYY-MM-DD format (defaults to 2 months ago)",
+        description="End date in YYYY-MM-DD format (defaults to settings.END_DATE)",
         example="2025-12-31",
     )
     resume: bool = Field(

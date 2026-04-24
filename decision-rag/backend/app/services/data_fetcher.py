@@ -13,7 +13,8 @@ from typing import Generator, List, Optional
 from ..core.config import settings
 from ..schemas.decision import DecisionDocument
 from ..utils.date_utils import format_date_for_api, generate_date_range, weeks_between
-from .api_client import DecisionAPIClient
+from .api_client import APIOutageError, DecisionAPIClient
+from .blob_storage import AzureBlobRawResponseSaver
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +22,20 @@ logger = logging.getLogger(__name__)
 class DecisionDataFetcher:
     """Service for fetching decision data in batches."""
 
-    def __init__(self, api_client: Optional[DecisionAPIClient] = None):
+    def __init__(
+        self,
+        api_client: Optional[DecisionAPIClient] = None,
+        blob_saver: Optional[AzureBlobRawResponseSaver] = None,
+    ):
         """
         Initialize the data fetcher.
 
         Args:
             api_client: Optional API client instance
+            blob_saver: Optional blob saver for archiving raw responses to Azure Blob Storage
         """
         self.api_client = api_client or DecisionAPIClient()
+        self.blob_saver = blob_saver
         self.stats = {
             "total_batches": 0,
             "batches_completed": 0,
@@ -39,6 +46,10 @@ class DecisionDataFetcher:
             "retry_attempts": 0,
             "documents_recovered": 0,
             "permanently_failed": 0,
+            "api_outages_detected": 0,
+            "batch_retries_attempted": 0,
+            "batches_recovered_from_outage": 0,
+            "batches_permanently_failed": 0,
             "start_time": None,
         }
 
@@ -76,14 +87,18 @@ class DecisionDataFetcher:
             "retry_attempts": 0,
             "documents_recovered": 0,
             "permanently_failed": 0,
+            "api_outages_detected": 0,
+            "batch_retries_attempted": 0,
+            "batches_recovered_from_outage": 0,
+            "batches_permanently_failed": 0,
             "start_time": time.time(),
         }
 
         # Generate date batches
-        date_batches = generate_date_range(start_date, end_date, settings.BATCH_SIZE_DAYS)
+        date_batches = generate_date_range(start_date, end_date, settings.BATCH_SIZE_DAYS, backwards=start_date > end_date)
         self.stats["total_batches"] = len(date_batches)
 
-        total_weeks = weeks_between(start_date, end_date)
+        total_weeks = weeks_between(start_date, end_date, backwards=start_date > end_date)
         filter_msg = " with ID filtering" if id_filter else ""
         logger.info(f"Starting data fetch{filter_msg} from {start_date.date()} to {end_date.date()}")
         logger.info(f"Total batches: {len(date_batches)} ({total_weeks} weeks)")
@@ -96,10 +111,10 @@ class DecisionDataFetcher:
                 # Fetch documents for this batch
                 documents = self._fetch_batch(batch_start, batch_end, api_key, id_filter)
 
-                # Yield each document
+                # Yield each document and their batch info
                 for doc in documents:
                     self.stats["documents_fetched"] += 1
-                    yield doc
+                    yield doc, batch_start, batch_end
 
                 self.stats["batches_completed"] += 1
 
@@ -139,8 +154,36 @@ class DecisionDataFetcher:
         start_str = format_date_for_api(start_date)
         end_str = format_date_for_api(end_date)
 
-        # Fetch all decision IDs for this batch
-        decision_ids = self.api_client.fetch_decision_ids(api_key, start_str, end_str)
+        # Fetch all decision IDs for this batch with outage detection and retry
+        try:
+            decision_ids = self.api_client.fetch_decision_ids(api_key, start_str, end_str)
+        except APIOutageError as e:
+            # API outage detected - attempt batch-level retry
+            logger.warning(
+                f"API outage detected for batch {start_date.date()} to {end_date.date()}: {e}"
+            )
+            self.stats["api_outages_detected"] += 1
+
+            # Retry the batch
+            success, decision_ids = self._retry_batch_on_api_outage(
+                start_date, end_date, api_key
+            )
+
+            if not success:
+                # Permanent failure after max retries
+                logger.error(
+                    f"Batch {start_date.date()} to {end_date.date()} permanently failed "
+                    f"after {settings.API_OUTAGE_MAX_RETRIES} retry attempts"
+                )
+                self.stats["batches_permanently_failed"] += 1
+                return []
+
+            # Successfully recovered
+            logger.info(
+                f"Batch {start_date.date()} to {end_date.date()} recovered from API outage"
+            )
+            self.stats["batches_recovered_from_outage"] += 1
+
         total_ids = len(decision_ids.decisions)
         self.stats["ids_fetched"] += total_ids
 
@@ -172,6 +215,10 @@ class DecisionDataFetcher:
         if not native_ids:
             return []
 
+        # Start blob batch (after ID filtering so only fetched docs are included)
+        if self.blob_saver:
+            self.blob_saver.start_batch(start_date, end_date)
+
         # Fetch documents for filtered IDs
         documents, failed_ids = self._fetch_documents_for_ids(native_ids, api_key)
 
@@ -181,7 +228,89 @@ class DecisionDataFetcher:
             retry_documents = self._retry_failed_documents(failed_ids, api_key)
             documents.extend(retry_documents)
 
+        # Flush blob batch once all documents (including retries) are done
+        if self.blob_saver:
+            self.blob_saver.flush_batch()
+
         return documents
+
+    def _retry_batch_on_api_outage(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        api_key: str,
+    ) -> tuple[bool, Optional[any]]:
+        """
+        Retry fetching a batch after API outage detection with exponential backoff.
+
+        Args:
+            start_date: Batch start date
+            end_date: Batch end date
+            api_key: API key for authentication
+
+        Returns:
+            Tuple of (success: bool, decision_ids: DecisionIdResponse or None)
+        """
+        start_str = format_date_for_api(start_date)
+        end_str = format_date_for_api(end_date)
+        max_retries = settings.API_OUTAGE_MAX_RETRIES
+
+        logger.info(
+            f"Starting batch retry for {start_date.date()} to {end_date.date()} "
+            f"(max {max_retries} retries)"
+        )
+
+        for retry_attempt in range(1, max_retries + 1):
+            # Calculate exponential backoff wait time
+            wait_time = min(
+                settings.API_OUTAGE_INITIAL_WAIT
+                * (settings.API_OUTAGE_BACKOFF_MULTIPLIER ** (retry_attempt - 1)),
+                settings.API_OUTAGE_MAX_WAIT,
+            )
+
+            logger.info(
+                f"Batch retry attempt {retry_attempt}/{max_retries}: "
+                f"Waiting {wait_time:.1f}s before retry..."
+            )
+
+            # Wait before retrying
+            time.sleep(wait_time)
+
+            self.stats["batch_retries_attempted"] += 1
+
+            try:
+                # Attempt to fetch decision IDs
+                decision_ids = self.api_client.fetch_decision_ids(api_key, start_str, end_str)
+
+                # Success - API has recovered
+                logger.info(
+                    f"Successfully fetched decision IDs on retry attempt {retry_attempt} "
+                    f"for batch {start_date.date()} to {end_date.date()}"
+                )
+                return True, decision_ids
+
+            except APIOutageError as e:
+                # API still down
+                logger.warning(
+                    f"API still unavailable on retry attempt {retry_attempt}/{max_retries}: {e}"
+                )
+                if retry_attempt >= max_retries:
+                    logger.error(
+                        f"Maximum retry attempts ({max_retries}) exceeded for batch "
+                        f"{start_date.date()} to {end_date.date()}"
+                    )
+                    return False, None
+                # Continue to next retry attempt
+
+            except Exception as e:
+                # Other error occurred
+                logger.error(
+                    f"Unexpected error during batch retry attempt {retry_attempt}: {e}",
+                    exc_info=True,
+                )
+                return False, None
+
+        return False, None
 
     def _fetch_documents_for_ids(
         self, native_ids: List[str], api_key: str
@@ -352,6 +481,7 @@ class DecisionDataFetcher:
                 f"Errors: {self.stats['errors']} | "
                 f"Retries: {self.stats['retry_attempts']} | "
                 f"Recovered: {self.stats['documents_recovered']} | "
+                f"API outages: {self.stats['api_outages_detected']} | "
                 f"Elapsed: {elapsed/60:.1f}m | "
                 f"Est. remaining: {estimated_remaining/60:.1f}m"
             )
@@ -379,7 +509,21 @@ class DecisionDataFetcher:
                 self.stats["documents_recovered"] / self.stats["retry_attempts"] * 100
             )
             logger.info(f"Retry recovery rate: {recovery_rate:.1f}%")
-        logger.info(f"Total time: {elapsed/60:.1f} minutes")
+
+        # API outage statistics
+        if self.stats["api_outages_detected"] > 0:
+            logger.info("\nAPI Outage Statistics:")
+            logger.info(f"API outages detected: {self.stats['api_outages_detected']}")
+            logger.info(f"Batch retry attempts: {self.stats['batch_retries_attempted']}")
+            logger.info(f"Batches recovered from outage: {self.stats['batches_recovered_from_outage']}")
+            logger.info(f"Batches permanently failed: {self.stats['batches_permanently_failed']}")
+            if self.stats["batch_retries_attempted"] > 0:
+                batch_recovery_rate = (
+                    self.stats["batches_recovered_from_outage"] / self.stats["api_outages_detected"] * 100
+                )
+                logger.info(f"Batch recovery rate: {batch_recovery_rate:.1f}%")
+
+        logger.info(f"\nTotal time: {elapsed/60:.1f} minutes")
         if self.stats["batches_completed"] > 0:
             logger.info(
                 f"Average time per batch: {elapsed/self.stats['batches_completed']:.1f} seconds"

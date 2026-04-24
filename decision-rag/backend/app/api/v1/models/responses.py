@@ -65,13 +65,13 @@ class RepositoryStatsResponse(BaseModel):
 class VectorStoreStatsResponse(BaseModel):
     """Response model for vector store statistics."""
 
-    index_name: str = Field(..., description="Elasticsearch index name")
+    instance: str = Field(..., description="Vector store instance type (e.g., Elasticsearch)")
+    index_name: str = Field(..., description="Index name")
     total_chunks: int = Field(..., description="Total document chunks in index")
     index_size_mb: Optional[float] = Field(
         None,
         description="Index size in megabytes",
     )
-    status: str = Field(..., description="Index status")
 
 
 class HealthResponse(BaseModel):
@@ -104,7 +104,6 @@ class DocumentSummary(BaseModel):
     decision_date: Optional[str] = Field(None, description="Decision date")
     organization: Optional[str] = Field(None, description="Organization name")
     classification: Optional[str] = Field(None, description="Document classification")
-    subject: Optional[str] = Field(None, description="Document subject")
 
 
 class DocumentListResponse(BaseModel):

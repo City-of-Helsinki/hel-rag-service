@@ -1,6 +1,6 @@
 """Dependency injection for FastAPI endpoints."""
 
-from typing import Generator
+from typing import Generator, Optional
 
 from fastapi import Header, HTTPException, status
 
@@ -8,21 +8,26 @@ from app.core import get_logger, settings
 from app.repositories import DecisionRepository
 from app.services import (
     AzureEmbedder,
+    BaseVectorStore,
+    CompositeVectorStore,
     DecisionAPIClient,
     DecisionDataFetcher,
     ElasticsearchVectorStore,
     IngestionPipeline,
     ParagraphChunker,
+    PgvectorVectorStore,
     SchedulerService,
     job_manager,
 )
 from app.services.attachment_downloader import AttachmentDownloader
+from app.services.blob_storage import AzureBlobRawResponseSaver
+from app.services.parquet_embedding_saver import ParquetEmbeddingSaver
 
 logger = get_logger(__name__)
 
 
 async def verify_api_key(
-    api_key: str = Header(None, alias="X-API-Key")
+    api_key: str = Header(None, alias=settings.API_AUTH_KEY_HEADER),
 ) -> None:
     """
     Verify API key for authentication.
@@ -77,17 +82,61 @@ def get_repository() -> DecisionRepository:
     return DecisionRepository(settings.DATA_DIR)
 
 
-def get_api_client() -> DecisionAPIClient:
+def get_api_client(blob_saver: Optional[AzureBlobRawResponseSaver] = None) -> DecisionAPIClient:
     """
     Get DecisionAPIClient instance.
 
     Returns:
         DecisionAPIClient instance
     """
-    return DecisionAPIClient()
+    raw_response_saver = blob_saver.buffer if blob_saver is not None else None
+    return DecisionAPIClient(raw_response_saver=raw_response_saver)
 
 
-def get_vector_store() -> Generator[ElasticsearchVectorStore, None, None]:
+def _build_vector_store() -> BaseVectorStore:
+    """
+    Build the appropriate vector store based on VECTOR_STORE_BACKENDS setting.
+
+    Returns:
+        BaseVectorStore instance (single backend or CompositeVectorStore).
+    """
+    backends_config: list[str] = [
+        b.strip().lower() for b in settings.VECTOR_STORE_BACKENDS
+    ]
+
+    instances: list[BaseVectorStore] = []
+    if "elasticsearch" in backends_config:
+        instances.append(ElasticsearchVectorStore())
+    if "pgvector" in backends_config:
+        instances.append(PgvectorVectorStore())
+
+    if not instances:
+        raise ValueError(
+            f"No valid backends found in VECTOR_STORE_BACKENDS: {settings.VECTOR_STORE_BACKENDS}"
+        )
+
+    if len(instances) == 1:
+        return instances[0]
+
+    return CompositeVectorStore(instances)
+
+
+def get_vector_store() -> Generator[BaseVectorStore, None, None]:
+    """
+    Get vector store instance based on configured backends.
+
+    Yields:
+        BaseVectorStore instance
+    """
+    store = _build_vector_store()
+    try:
+        yield store
+    finally:
+        for s in store.backends if isinstance(store, CompositeVectorStore) else [store]:
+            s.close()
+
+
+def get_elasticsearch_store() -> Generator[ElasticsearchVectorStore, None, None]:
     """
     Get ElasticsearchVectorStore instance.
 
@@ -98,8 +147,21 @@ def get_vector_store() -> Generator[ElasticsearchVectorStore, None, None]:
     try:
         yield store
     finally:
-        # Cleanup if needed
-        pass
+        store.close()
+
+
+def get_pgvector_store() -> Generator[PgvectorVectorStore, None, None]:
+    """
+    Get PgvectorVectorStore instance.
+
+    Yields:
+        PgvectorVectorStore instance
+    """
+    store = PgvectorVectorStore()
+    try:
+        yield store
+    finally:
+        store.close()
 
 
 def get_embedder() -> AzureEmbedder:
@@ -130,10 +192,11 @@ def get_ingestion_pipeline() -> IngestionPipeline:
         IngestionPipeline instance
     """
     repository = get_repository()
-    vector_store = ElasticsearchVectorStore()
+    vector_store = _build_vector_store()
     embedder = get_embedder()
     chunker = get_chunker()
     attachment_downloader = get_attachment_downloader()
+    parquet_saver = get_parquet_saver()
 
     return IngestionPipeline(
         repository=repository,
@@ -141,6 +204,31 @@ def get_ingestion_pipeline() -> IngestionPipeline:
         embedder=embedder,
         chunker=chunker,
         attachment_downloader=attachment_downloader,
+        parquet_saver=parquet_saver,
+    )
+
+
+def get_parquet_saver() -> Optional[ParquetEmbeddingSaver]:
+    """Return a configured ParquetEmbeddingSaver or None if disabled."""
+    if not settings.AZURE_BLOB_EMBEDDINGS_ENABLED:
+        return None
+    return ParquetEmbeddingSaver(
+        container_name=settings.AZURE_BLOB_EMBEDDINGS_CONTAINER_NAME,
+        blob_prefix=settings.AZURE_BLOB_EMBEDDINGS_BLOB_PREFIX.format(dimension=settings.EMBEDDING_DIMENSION),
+        connection_string=settings.AZURE_BLOB_CONNECTION_STRING or None,
+        account_url=settings.AZURE_BLOB_ACCOUNT_URL or None,
+    )
+
+
+def get_blob_saver() -> Optional[AzureBlobRawResponseSaver]:
+    """Return a configured AzureBlobRawResponseSaver or None if disabled."""
+    if not settings.AZURE_BLOB_RAW_RESPONSES_ENABLED:
+        return None
+    return AzureBlobRawResponseSaver(
+        container_name=settings.AZURE_BLOB_CONTAINER_NAME,
+        blob_prefix=settings.AZURE_BLOB_BLOB_PREFIX,
+        connection_string=settings.AZURE_BLOB_CONNECTION_STRING or None,
+        account_url=settings.AZURE_BLOB_ACCOUNT_URL or None,
     )
 
 
@@ -151,10 +239,11 @@ def get_data_fetcher() -> DecisionDataFetcher:
     Returns:
         DecisionDataFetcher instance
     """
-    api_client = get_api_client()
-    return DecisionDataFetcher(api_client)
+    blob_saver = get_blob_saver()
+    api_client = get_api_client(blob_saver=blob_saver)
+    return DecisionDataFetcher(api_client=api_client, blob_saver=blob_saver)
 
-def get_attachment_downloader() -> AttachmentDownloader:
+def get_attachment_downloader() -> Optional[AttachmentDownloader]:
     """
     Get AttachmentDownloader instance.
 
