@@ -38,7 +38,7 @@ resources:
 
 extends:
   # Filename in Azure DevOps Repository
-  template: components/decision-rag/pipelines/open-telemetry-collector-test.yml@hel-rag-service-pipelines
+  template: components/open-telemetry-collector/pipelines/open-telemetry-collector-test.yml@hel-rag-service-pipelines
   # parameters:
     # Application build arguments and config map values as key value pairs.
     # Does not contain all buildArguments or configMap values, the rest located in hel-rag-service-pipelines
