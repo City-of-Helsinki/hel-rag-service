@@ -63,8 +63,7 @@ class PgvectorVectorStore(BaseVectorStore):
             )
             self.conn.autocommit = False
 
-            self._enable_pgvector()
-            #self._create_table_if_not_exists()
+            # Assume the table and pgvector extension are already set up
 
             logger.info(
                 f"Connected to pgvector at {self.host}:{self.port}/{self.db}, "
@@ -73,42 +72,6 @@ class PgvectorVectorStore(BaseVectorStore):
         except Exception as e:
             logger.error(f"Error initializing PgvectorVectorStore: {e}")
             raise
-
-    def _enable_pgvector(self) -> None:
-        """Enable the pgvector extension in the database."""
-        with self.conn.cursor() as cur:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        self.conn.commit()
-
-    def _create_table_if_not_exists(self) -> None:
-        """Create the chunk table and indexes if they do not already exist."""
-        with self.conn.cursor() as cur:
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {self.table} (
-                    id              TEXT PRIMARY KEY,
-                    vector          HALFVEC({self.vector_dims}),
-                    collection_name TEXT NOT NULL,
-                    text            TEXT,
-                    vmetadata       JSONB
-                );
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_{self.table}_vector
-                    ON {self.table} USING hnsw (vector halfvec_cosine_ops)
-                    WITH (m='16', ef_construction='64');
-                """
-            )
-            cur.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_{self.table}_collection_name
-                    ON {self.table} (collection_name);
-                """
-            )
-        self.conn.commit()
-        logger.info(f"Table '{self.table}' ready")
 
     def bulk_index_chunks(
         self, chunks_with_embeddings: List[Dict[str, Any]], batch_size: int = 100
