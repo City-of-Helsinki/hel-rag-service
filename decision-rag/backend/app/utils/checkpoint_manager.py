@@ -381,3 +381,64 @@ class FullPipelineCheckpoint(CheckpointManager):
             total_deleted=total_deleted,
             batches_processed=batches_processed,
         )
+
+
+class BlobIngestCheckpoint(CheckpointManager):
+    """Checkpoint manager specialized for blob-based ingestion operations."""
+
+    def __init__(self, repository: "DecisionRepository"):
+        """Initialize blob ingest checkpoint manager."""
+        super().__init__(repository, "blob_ingest")
+
+    def initialize(
+        self,
+        blobs_to_process: int,
+        batch_size: int = 100,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> None:
+        self.initialize_checkpoint(
+            blobs_to_process=blobs_to_process,
+            batch_size=batch_size,
+            start_date=start_date,
+            end_date=end_date,
+            blobs_completed=[],
+            blobs_failed=[],
+            documents_processed=0,
+            documents_successful=0,
+            documents_failed=0,
+            documents_skipped=0,
+            total_chunks=0,
+            total_attachments=0,
+            total_attachment_chunks=0,
+            files_deleted=0,
+            batches_processed=0,
+        )
+
+    def update_progress(
+        self,
+        blobs_completed: list,
+        blobs_failed: list,
+        documents_processed: int,
+        documents_successful: int,
+        documents_failed: int,
+        documents_skipped: int,
+        total_chunks: int,
+        total_attachments: int,
+        total_attachment_chunks: int,
+        files_deleted: int,
+        batches_processed: int,
+    ) -> None:
+        self.update_fields(
+            blobs_completed=blobs_completed,
+            blobs_failed=blobs_failed,
+            documents_processed=documents_processed,
+            documents_successful=documents_successful,
+            documents_failed=documents_failed,
+            documents_skipped=documents_skipped,
+            total_chunks=total_chunks,
+            total_attachments=total_attachments,
+            total_attachment_chunks=total_attachment_chunks,
+            files_deleted=files_deleted,
+            batches_processed=batches_processed,
+        )

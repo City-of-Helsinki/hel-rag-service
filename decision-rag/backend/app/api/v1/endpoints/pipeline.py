@@ -6,19 +6,31 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import (
+    get_blob_reader,
     get_data_fetcher,
     get_ingestion_pipeline,
     get_job_manager,
     get_repository,
     verify_api_key,
 )
-from app.api.v1.models.requests import FetchRequest, FullPipelineRequest, IngestRequest
+from app.api.v1.models.requests import (
+    BlobIngestRequest,
+    FetchRequest,
+    FullPipelineRequest,
+    IngestRequest,
+)
 from app.api.v1.models.responses import JobStatusResponse
 from app.core import get_logger, settings
 from app.repositories import DecisionRepository
 from app.services import DecisionDataFetcher, IngestionPipeline, JobManager
+from app.services.blob_reader import BlobDecisionReader
 from app.services.vector_store import MaxRetriesExceededError
-from app.utils.checkpoint_manager import FetchCheckpoint, FullPipelineCheckpoint, IngestCheckpoint
+from app.utils.checkpoint_manager import (
+    BlobIngestCheckpoint,
+    FetchCheckpoint,
+    FullPipelineCheckpoint,
+    IngestCheckpoint,
+)
 from app.utils.date_utils import parse_date
 
 router = APIRouter()
@@ -807,6 +819,346 @@ async def start_full_pipeline(
         type=job.type,
         status=job.status,
         message="Full pipeline job started",
+    )
+
+
+def run_blob_ingest_job(
+    job_id: str,
+    job_manager: JobManager,
+    blob_reader: BlobDecisionReader,
+    pipeline: IngestionPipeline,
+    request: "BlobIngestRequest",
+):
+    """
+    Run blob-based ingestion job in background.
+
+    Downloads and processes *.ndjson.gz blobs from Azure Blob Storage, feeding
+    each DecisionDocument through the same ingestion phase used by run_full_pipeline_job.
+    """
+    from datetime import date as _date
+
+    try:
+        job_manager.start_job(job_id)
+        job_manager.update_progress(job_id, 0, "Starting blob ingestion...")
+
+        checkpoint_mgr = BlobIngestCheckpoint(pipeline.repository)
+
+        # Parse optional date filter
+        start_date_obj: "Optional[_date]" = None
+        end_date_obj: "Optional[_date]" = None
+        if request.start_date:
+            from app.utils.date_utils import parse_date
+            start_date_obj = parse_date(request.start_date).date()
+        if request.end_date:
+            from app.utils.date_utils import parse_date
+            end_date_obj = parse_date(request.end_date).date()
+
+        # Resume: load blobs already completed
+        blobs_completed: list = []
+        if request.resume:
+            saved_checkpoint = checkpoint_mgr.load_checkpoint()
+            if saved_checkpoint and not saved_checkpoint.get("completed", False):
+                blobs_completed = list(saved_checkpoint.get("blobs_completed", []))
+                logger.info(
+                    f"Resuming blob ingest — {len(blobs_completed)} blob(s) already completed"
+                )
+            else:
+                logger.info("No valid checkpoint found, starting from beginning")
+
+        # Discover blobs
+        job_manager.update_progress(job_id, 2, "Listing blobs...")
+        blob_names = blob_reader.list_blobs(start_date_obj, end_date_obj)
+        blobs_to_process = len(blob_names)
+
+        if blobs_to_process == 0:
+            job_manager.complete_job(
+                job_id,
+                statistics={"blobs_to_process": 0, "documents_processed": 0},
+                message="No blobs found matching the requested date range",
+            )
+            return
+
+        logger.info(
+            f"Blob ingest job {job_id}: {blobs_to_process} blob(s) to process, "
+            f"batch_size={request.batch_size}"
+        )
+
+        # Initialize or restore checkpoint
+        saved_checkpoint = checkpoint_mgr.load_checkpoint() if request.resume else None
+
+        if not saved_checkpoint:
+            checkpoint_mgr.initialize(
+                blobs_to_process=blobs_to_process,
+                batch_size=request.batch_size,
+                start_date=request.start_date,
+                end_date=request.end_date,
+            )
+
+        blobs_failed: list = (list(saved_checkpoint.get("blobs_failed", [])) if saved_checkpoint else [])
+
+        stats = {
+            "documents_processed": (saved_checkpoint.get("documents_processed", 0) if saved_checkpoint else 0),
+            "documents_successful": (saved_checkpoint.get("documents_successful", 0) if saved_checkpoint else 0),
+            "documents_failed": (saved_checkpoint.get("documents_failed", 0) if saved_checkpoint else 0),
+            "documents_skipped": (saved_checkpoint.get("documents_skipped", 0) if saved_checkpoint else 0),
+            "total_chunks": (saved_checkpoint.get("total_chunks", 0) if saved_checkpoint else 0),
+            "total_attachments": (saved_checkpoint.get("total_attachments", 0) if saved_checkpoint else 0),
+            "total_attachment_chunks": (saved_checkpoint.get("total_attachment_chunks", 0) if saved_checkpoint else 0),
+            "files_deleted": (saved_checkpoint.get("files_deleted", 0) if saved_checkpoint else 0),
+            "batches_processed": (saved_checkpoint.get("batches_processed", 0) if saved_checkpoint else 0),
+        }
+
+        batch_native_ids = []
+
+        for blob_idx, blob_name in enumerate(blob_names):
+            # Shutdown check
+            if job_manager.is_shutdown_requested():
+                logger.warning(f"Shutdown requested, stopping blob ingest job {job_id}")
+                checkpoint_mgr.update_progress(
+                    blobs_completed, blobs_failed, **stats
+                )
+                checkpoint_mgr.save()
+                job_manager.fail_job(
+                    job_id, "Job stopped due to shutdown request", statistics=stats
+                )
+                return
+
+            # Skip already-completed blobs when resuming
+            if blob_name in blobs_completed:
+                logger.debug(f"Skipping already-completed blob: {blob_name}")
+                continue
+
+            # Parse date range from blob name
+            try:
+                blob_start, blob_end = blob_reader.get_blob_date_range(blob_name)
+            except ValueError as exc:
+                logger.error(f"Cannot parse date range from '{blob_name}': {exc}; skipping")
+                blobs_failed.append(blob_name)
+                continue
+
+            # Current blob start and end dates
+            current_blob_start = parse_date(blob_start.strftime("%Y-%m-%d")) if blob_start else None
+            current_blob_end = parse_date(blob_end.strftime("%Y-%m-%d")) if blob_end else None
+
+            progress_pct = max(5, int((blob_idx / blobs_to_process) * 90))
+            job_manager.update_progress(
+                job_id,
+                progress_pct,
+                f"Processing blob {blob_idx + 1}/{blobs_to_process}: {blob_name}",
+            )
+
+            try:
+                for document in blob_reader.iter_documents(blob_name):
+                    # Shutdown check inside document loop
+                    if job_manager.is_shutdown_requested():
+                        logger.warning(
+                            f"Shutdown requested mid-blob, stopping blob ingest job {job_id}"
+                        )
+                        checkpoint_mgr.update_progress(
+                            blobs_completed, blobs_failed, **stats
+                        )
+                        checkpoint_mgr.save()
+                        job_manager.fail_job(
+                            job_id, "Job stopped due to shutdown request", statistics=stats
+                        )
+                        return
+
+                    # Skip existing documents if requested
+                    if request.skip_existing and pipeline.vector_store.document_exists(
+                        document.NativeId
+                    ):
+                        stats["documents_skipped"] += 1
+                        logger.debug(f"Skipping existing document: {document.NativeId}")
+                        continue
+
+                    # Save document to local repository
+                    try:
+                        saved = pipeline.repository.save_decision(document)
+                        if not saved:
+                            logger.warning(f"Failed to save document {document.NativeId}")
+                            stats["documents_failed"] += 1
+                            continue
+                    except Exception as exc:
+                        logger.error(
+                            f"Failed to save document {document.NativeId}: {exc}"
+                        )
+                        stats["documents_failed"] += 1
+                        continue
+
+                    batch_native_ids.append(document.NativeId)
+
+                    # Process when batch is full
+                    if len(batch_native_ids) >= request.batch_size:
+                        try:
+                            batch_stats = pipeline.process_batch(
+                                batch_native_ids,
+                                reindex=not request.skip_existing,
+                                batch_start=current_blob_start,
+                                batch_end=current_blob_end,
+                            )
+                        except MaxRetriesExceededError:
+                            raise  # Let outer handler catch it
+                        except Exception as exc:
+                            logger.error(f"Batch processing failed: {exc}")
+                            stats["documents_failed"] += len(batch_native_ids)
+                            batch_native_ids = []
+                            continue
+
+                        stats["documents_processed"] += batch_stats["processed"]
+                        stats["documents_successful"] += batch_stats["successful"]
+                        stats["documents_failed"] += batch_stats["failed"]
+                        stats["documents_skipped"] += batch_stats["skipped"]
+                        stats["total_chunks"] += batch_stats["total_chunks"]
+                        stats["total_attachments"] += batch_stats.get("total_attachments", 0)
+                        stats["total_attachment_chunks"] += batch_stats.get(
+                            "total_attachment_chunks", 0
+                        )
+                        stats["batches_processed"] += 1
+
+                        # Delete local files
+                        if not request.keep_files:
+                            for native_id in batch_native_ids:
+                                try:
+                                    pipeline.repository.delete_decision(native_id)
+                                    stats["files_deleted"] += 1
+                                except Exception as exc:
+                                    logger.warning(f"Failed to delete {native_id}: {exc}")
+
+                        batch_native_ids = []
+
+                # Process remaining partial batch for this blob
+                if batch_native_ids:
+                    try:
+                        batch_stats = pipeline.process_batch(
+                            batch_native_ids,
+                            reindex=not request.skip_existing,
+                            batch_start=current_blob_start,
+                            batch_end=current_blob_end,
+                        )
+                    except MaxRetriesExceededError:
+                        raise
+                    except Exception as exc:
+                        logger.error(f"Final batch processing failed for blob '{blob_name}': {exc}")
+                        stats["documents_failed"] += len(batch_native_ids)
+                        batch_native_ids = []
+                    else:
+                        stats["documents_processed"] += batch_stats["processed"]
+                        stats["documents_successful"] += batch_stats["successful"]
+                        stats["documents_failed"] += batch_stats["failed"]
+                        stats["documents_skipped"] += batch_stats["skipped"]
+                        stats["total_chunks"] += batch_stats["total_chunks"]
+                        stats["total_attachments"] += batch_stats.get("total_attachments", 0)
+                        stats["total_attachment_chunks"] += batch_stats.get(
+                            "total_attachment_chunks", 0
+                        )
+                        stats["batches_processed"] += 1
+
+                        if not request.keep_files:
+                            for native_id in batch_native_ids:
+                                try:
+                                    pipeline.repository.delete_decision(native_id)
+                                    stats["files_deleted"] += 1
+                                except Exception as exc:
+                                    logger.warning(f"Failed to delete {native_id}: {exc}")
+
+                        batch_native_ids = []
+
+                blobs_completed.append(blob_name)
+
+            except MaxRetriesExceededError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    f"Blob ingest: unrecoverable error processing '{blob_name}': {exc}",
+                    exc_info=True,
+                )
+                blobs_failed.append(blob_name)
+                batch_native_ids = []
+
+            # Save checkpoint after each blob
+            checkpoint_mgr.update_progress(
+                blobs_completed, blobs_failed, **stats
+            )
+            checkpoint_mgr.save()
+
+        # Mark completed
+        checkpoint_mgr.mark_completed(
+            blobs_to_process=blobs_to_process,
+            blobs_completed=blobs_completed,
+            blobs_failed=blobs_failed,
+            **stats,
+        )
+
+        statistics = {
+            "blobs_to_process": blobs_to_process,
+            "blobs_completed": len(blobs_completed),
+            "blobs_failed": len(blobs_failed),
+            **stats,
+        }
+
+        job_manager.complete_job(
+            job_id,
+            statistics=statistics,
+            message=(
+                f"Blob ingest completed: {stats['documents_successful']} documents processed "
+                f"from {len(blobs_completed)}/{blobs_to_process} blobs"
+            ),
+        )
+
+        logger.info(f"Blob ingest job {job_id} completed: {statistics}")
+
+    except MaxRetriesExceededError as exc:
+        logger.error(f"Blob ingest job {job_id} failed due to max retries exceeded: {exc}")
+        job_manager.request_shutdown()
+        job_manager.fail_job(
+            job_id,
+            f"Maximum vector store retry attempts exceeded. Shutdown requested. Error: {exc}",
+        )
+    except Exception as exc:
+        logger.error(f"Blob ingest job {job_id} failed: {exc}", exc_info=True)
+        job_manager.fail_job(job_id, str(exc))
+
+
+@router.post("/ingest-from-blob", response_model=JobStatusResponse, status_code=202)
+async def start_blob_ingest(
+    request: BlobIngestRequest,
+    blob_reader: BlobDecisionReader = Depends(get_blob_reader),
+    pipeline: IngestionPipeline = Depends(get_ingestion_pipeline),
+    job_manager: JobManager = Depends(get_job_manager),
+    _: None = Depends(verify_api_key),
+):
+    """
+    Ingest decisions from archived Azure Blob Storage NDJSON blobs.
+
+    Reads *.ndjson.gz blobs produced by AzureBlobRawResponseSaver and processes
+    each DecisionDocument through the vector-store ingestion pipeline, mirroring
+    the full-pipeline ingestion phase without hitting the live API.
+
+    Returns:
+        Job status with job_id for tracking progress
+    """
+    if job_manager.is_shutdown_requested():
+        raise HTTPException(
+            status_code=503,
+            detail="Pipeline shutdown has been requested. Cannot start new jobs. Use /pipeline/shutdown/reset to resume operations.",
+        )
+
+    job_id = job_manager.create_job("blob_ingest")
+
+    thread = threading.Thread(
+        target=run_blob_ingest_job,
+        args=(job_id, job_manager, blob_reader, pipeline, request),
+    )
+    thread.daemon = True
+    thread.start()
+
+    job = job_manager.get_job(job_id)
+
+    return JobStatusResponse(
+        job_id=job.job_id,
+        type=job.type,
+        status=job.status,
+        message="Blob ingest job started",
     )
 
 

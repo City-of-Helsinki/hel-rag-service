@@ -97,6 +97,39 @@ class FullPipelineRequest(BaseModel):
     )
 
 
+class BlobIngestRequest(BaseModel):
+    """Request model for ingesting decisions from Azure Blob Storage."""
+
+    start_date: Optional[str] = Field(
+        None,
+        description="Only process blobs overlapping this start date (YYYY-MM-DD)",
+        example="2025-01-01",
+    )
+    end_date: Optional[str] = Field(
+        None,
+        description="Only process blobs overlapping this end date (YYYY-MM-DD)",
+        example="2025-12-31",
+    )
+    batch_size: int = Field(
+        100,
+        description="Number of documents to process in each batch",
+        ge=1,
+        le=1000,
+    )
+    resume: bool = Field(
+        False,
+        description="Resume from last checkpoint",
+    )
+    skip_existing: bool = Field(
+        False,
+        description="Skip documents already in vector store",
+    )
+    keep_files: bool = Field(
+        False,
+        description="Keep temporary local files after ingestion",
+    )
+
+
 class DataQueryRequest(BaseModel):
     """Request model for querying stored data."""
 
