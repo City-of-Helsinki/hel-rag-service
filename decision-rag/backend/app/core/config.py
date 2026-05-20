@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     AZURE_BLOB_CONNECTION_STRING: str = ""  # Alternative to account URL + managed identity
     AZURE_BLOB_CONTAINER_NAME: str = "decisions"
     AZURE_BLOB_BLOB_PREFIX: str = "api_responses"
+    # Blob prefix for the source container when ingesting from blob storage.
+    # Defaults to the same prefix used by the raw-response saver when empty.
+    AZURE_BLOB_INGEST_BLOB_PREFIX: str = ""
 
     # Azure Blob Storage — embedding Parquet export
     AZURE_BLOB_EMBEDDINGS_ENABLED: bool = False
@@ -138,6 +141,8 @@ class Settings(BaseSettings):
     PGVECTOR_USER: str = ""
     PGVECTOR_PASSWORD: str = ""
     PGVECTOR_TABLE: str = "document_chunk"
+    PGVECTOR_OP_MAX_RETRIES: int = 3  # Max reconnect-and-retry attempts per DB operation
+    PGVECTOR_RETRY_BACKOFF_BASE: float = 1.0  # Base delay (seconds) for exponential backoff
 
     # Chunking configuration
     EMBED_METADATA_IN_CHUNKS: bool = True  # Feature flag for metadata embedding

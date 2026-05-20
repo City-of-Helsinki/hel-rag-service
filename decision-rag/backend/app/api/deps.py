@@ -20,6 +20,7 @@ from app.services import (
     job_manager,
 )
 from app.services.attachment_downloader import AttachmentDownloader
+from app.services.blob_reader import BlobDecisionReader
 from app.services.blob_storage import AzureBlobRawResponseSaver
 from app.services.parquet_embedding_saver import ParquetEmbeddingSaver
 
@@ -263,6 +264,16 @@ def get_job_manager():
         JobManager instance
     """
     return job_manager
+
+
+def get_blob_reader() -> BlobDecisionReader:
+    """
+    Get BlobDecisionReader instance.
+
+    Returns:
+        BlobDecisionReader configured from application settings
+    """
+    return BlobDecisionReader()
 
 
 def get_scheduler() -> SchedulerService:
