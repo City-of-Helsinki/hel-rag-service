@@ -1,0 +1,9 @@
+msal>=1.31.0
+requests>=2.32.0
+python-dotenv>=1.0.0
+docling>=2.0.0
+httpx>=0.28.0
+pyyaml>=6.0
+markitdown[all]>=0.1.0
+pandas>=2.0.0
+openpyxl>=3.1.0
