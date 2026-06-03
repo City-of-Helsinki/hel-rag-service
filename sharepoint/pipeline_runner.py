@@ -149,6 +149,7 @@ def main() -> None:
     logger.info("=" * 60)
 
     crawl_errors: list[str] = []
+    crawled_sites: list[str] = []
     for site in sites:
         try:
             results = crawl_site(
@@ -159,6 +160,7 @@ def main() -> None:
                 output_dir=output_dir,
                 file_extensions=config.file_extensions,
             )
+            crawled_sites.append(site.group_key)
             logger.info(
                 "Site '%s': crawled %d page(s), %d file(s).",
                 site.name,
@@ -197,6 +199,10 @@ def main() -> None:
 
     # Only process groups that produced output in this run
     for group_key, group in config.site_groups.items():
+        if group_key not in crawled_sites:
+            logger.info("Group '%s' did not produce any output, skipping import.", group_key)
+            continue
+
         group_dir = output_dir / group_key
         if not group_dir.exists():
             logger.info("No output directory for group '%s', skipping import.", group_key)
@@ -233,8 +239,16 @@ def main() -> None:
     logger.info("=" * 60)
 
     try:
-        shutil.rmtree(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        resolved_output_dir = output_dir.resolve()
+        if resolved_output_dir in [Path("/"), Path("/data"), Path("/app")]:
+            raise ValueError("Refusing to delete unsafe directory: %s", resolved_output_dir)
+        
+        for child in output_dir.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+                
         logger.info("Cleanup complete. Output directory reset at %s.", output_dir)
     except Exception:
         # Non-fatal: PVC content is overwritten on the next run anyway.

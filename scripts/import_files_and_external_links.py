@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import requests
 import unicodedata
@@ -162,7 +163,7 @@ class OpenWebUIImporter:
     def add_file_to_kb(self, kb_id: str, file_id: str):
         url = f"{self.base_url}/api/v1/knowledge/{kb_id}/file/add"
         payload = {"file_id": file_id, "source_id": file_id}
-        response = requests.post(url, headers=self.headers, json=payload)
+        response = requests.post(url, headers=self.headers, json=payload, timeout=30)
         response.raise_for_status()
 
     def delete_file(self, file_id: str):
@@ -200,12 +201,10 @@ class OpenWebUIImporter:
 
                 if good_files:
                     # We have at least one good file. Keep the first good one, delete the rest.
-                    kept_file = good_files[0]
                     files_to_delete.extend(good_files[1:])
                     files_to_delete.extend(bad_files)
                 else:
                     # They are all bad. Keep one so the main loop can naturally upgrade it, delete the rest.
-                    kept_file = bad_files[0]
                     files_to_delete.extend(bad_files[1:])
 
                 for f_del in files_to_delete:
@@ -388,7 +387,7 @@ if __name__ == "__main__":
     if not base_url or not api_key:
         print("❌ Error: Missing Open WebUI credentials.")
         print("Provide --base-url / --api-key or set OPEN_WEB_UI_BASE_URL and OPEN_WEB_UI_API_KEY env vars.")
-        exit(1)
+        sys.exit(1)
 
     # Resolve KB name
     if args.kb_name:
@@ -398,7 +397,7 @@ if __name__ == "__main__":
         kb_name = f"{args.customer.upper()}-{args.purpose}-{date_str}"
     else:
         print("❌ Error: Provide either --kb-name or both --customer and --purpose.")
-        exit(1)
+        sys.exit(1)
 
     kb_desc = args.kb_description or f"Knowledge Base: {kb_name}"
 
@@ -411,7 +410,7 @@ if __name__ == "__main__":
         confirm = input("Are you sure you want to proceed? [y/N]: ").strip().lower()
         if confirm != "y":
             print("Aborted.")
-            exit(0)
+            sys.exit(0)
 
     try:
         knowledge_base_id = importer.get_knowledge_base_by_name(kb_name)
@@ -427,3 +426,4 @@ if __name__ == "__main__":
         print(f"\n❌ API Error: {e}")
         if e.response is not None:
             print(f"Response Details: {e.response.text}")
+        sys.exit(1)
