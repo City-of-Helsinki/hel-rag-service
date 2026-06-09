@@ -18,6 +18,7 @@ COPY sharepoint/main.py .
 COPY sharepoint/pipeline_runner.py .
 COPY sharepoint/sharepoint_client.py .
 COPY sharepoint/sharepoint_crawler.py .
+COPY sharepoint/requirements.txt .
 
 # Copy Open WebUI importer as the module name used by pipeline_runner.py
 COPY scripts/import_files_and_external_links.py owui_importer.py

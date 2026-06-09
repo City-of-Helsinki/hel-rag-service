@@ -1,13 +1,13 @@
 """
 Document converter abstractions for SharePoint file processing.
 
-Provides a pluggable conversion layer so the crawler can use either
-docling or MarkItDown as its backend, while sharing common post-processing
-logic (NaN / artefact cleanup) defined in :class:`BaseDocumentConverter`.
+Provides a conversion layer using MarkItDown as the backend, with shared
+post-processing logic (NaN / artefact cleanup) defined in
+:class:`BaseDocumentConverter`.
 
 Usage::
 
-    converter = MarkItDownDocumentConverter()  # or DoclingDocumentConverter()
+    converter = MarkItDownDocumentConverter()
     markdown = converter.convert_bytes(raw_bytes, "report.xlsx")
 """
 
@@ -130,31 +130,6 @@ class BaseDocumentConverter(abc.ABC):
             else:
                 result.append(line)
         return "".join(result)
-
-
-# ---------------------------------------------------------------------------
-# Docling backend
-# ---------------------------------------------------------------------------
-
-class DoclingDocumentConverter(BaseDocumentConverter):
-    """Converts files to Markdown using `docling <https://github.com/DS4SD/docling>`_.
-
-    This is the original backend and supports PDF, DOCX, PPTX and XLSX.
-    """
-
-    def __init__(self) -> None:
-        from docling.document_converter import DocumentConverter
-        self._converter = DocumentConverter()
-
-    def _convert_bytes_impl(self, raw: bytes, filename: str) -> str | None:
-        try:
-            from docling.datamodel.base_models import DocumentStream
-            stream = DocumentStream(name=filename, stream=io.BytesIO(raw))
-            result = self._converter.convert(stream)
-            return result.document.export_to_markdown()
-        except Exception:
-            logger.exception("docling failed to convert '%s'.", filename)
-            return None
 
 
 # ---------------------------------------------------------------------------
