@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 from config_loader import load_config, list_available_sites, SiteConfig
 from sharepoint_client import SharePointClient
 from sharepoint_crawler import SharePointCrawler
-from document_converter import BaseDocumentConverter, DoclingDocumentConverter, MarkItDownDocumentConverter
+from document_converter import BaseDocumentConverter, MarkItDownDocumentConverter
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -99,12 +99,6 @@ def main() -> None:
         help="List configured sites and exit.",
     )
     parser.add_argument(
-        "--converter",
-        choices=["docling", "markitdown"],
-        default="docling",
-        help="Document converter backend to use (default: docling).",
-    )
-    parser.add_argument(
         "--config",
         type=Path,
         default=None,
@@ -133,13 +127,8 @@ def main() -> None:
     logger.info("Will crawl %d site(s)", len(sites))
 
     # Instantiate converter backend
-    converter: BaseDocumentConverter
-    if args.converter == "markitdown":
-        logger.info("Using MarkItDown converter backend.")
-        converter = MarkItDownDocumentConverter()
-    else:
-        logger.info("Using Docling converter backend.")
-        converter = DoclingDocumentConverter()
+    logger.info("Using MarkItDown converter backend.")
+    converter: BaseDocumentConverter = MarkItDownDocumentConverter()
 
     # Crawl each site
     total_results = {"pages": 0, "files": 0}
