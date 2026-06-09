@@ -2,10 +2,8 @@
 SharePoint crawler: fetches all pages and files from a SharePoint site
 and converts them to Markdown documents.
 
-File conversion is delegated to a pluggable :class:`BaseDocumentConverter`
-(see ``document_converter.py``).  Pass ``converter=`` to the constructor to
-switch between :class:`DoclingDocumentConverter` (default) and
-:class:`MarkItDownDocumentConverter`.
+File conversion is delegated to :class:`MarkItDownDocumentConverter`
+(see ``document_converter.py``).
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ from pathlib import Path
 
 from sharepoint_client import SharePointClient
 from content_processor import HtmlToMarkdownConverter
-from document_converter import BaseDocumentConverter, DoclingDocumentConverter
+from document_converter import BaseDocumentConverter, MarkItDownDocumentConverter
 
 logger = logging.getLogger(__name__)
 
@@ -71,16 +69,14 @@ class SharePointCrawler:
             page_paths: Optional list of page paths to filter. If provided, only
                 pages matching these paths will be crawled. Omit to crawl all pages.
             converter: Document converter backend to use for binary files.
-                Defaults to :class:`~document_converter.DoclingDocumentConverter`.
-                Pass a :class:`~document_converter.MarkItDownDocumentConverter`
-                instance to use MarkItDown instead.
+                Defaults to :class:`~document_converter.MarkItDownDocumentConverter`.
         """
         self.client = client
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.file_extensions = file_extensions if file_extensions is not None else SUPPORTED_FILE_EXTENSIONS
         self.page_paths = page_paths
-        self._converter: BaseDocumentConverter = converter or DoclingDocumentConverter()
+        self._converter: BaseDocumentConverter = converter or MarkItDownDocumentConverter()
         self._html_converter = HtmlToMarkdownConverter()
 
     # ------------------------------------------------------------------
@@ -148,7 +144,7 @@ class SharePointCrawler:
                 logger.warning("Empty content for page '%s', skipping.", title)
                 continue
 
-            # Convert HTML to Markdown via docling
+            # Convert HTML to Markdown via MarkItDown
             text = self._html_converter.convert(html, source_label=title)
             if not text:
                 logger.warning("Markdown conversion produced no output for page '%s', skipping.", title)
@@ -223,7 +219,7 @@ class SharePointCrawler:
                 logger.exception("Failed to download '%s'.", name)
                 continue
 
-            # Convert to Markdown via docling
+            # Convert to Markdown via MarkItDown
             markdown = self._convert_file(raw, name)
             if not markdown:
                 continue

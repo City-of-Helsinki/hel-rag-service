@@ -72,15 +72,12 @@ python main.py --list
 
 # Use a custom config file
 python main.py --config /path/to/my_config.yaml
-
-# Define markitdown as converter (default is docling)
-python main.py --converter markitdown
 ```
 
 The script will:
 1. Authenticate against Azure AD using client credentials (app-only).
 2. Crawl all SharePoint pages and supported files from the selected sites.
-3. Convert content to Markdown using [docling](https://github.com/DS4SD/docling).
+3. Convert content to Markdown using [MarkItDown](https://github.com/microsoft/markitdown).
 4. Save results under `output/<site-name>/`:
    - `output/<site-name>/pages/` — site pages as `.md` files
    - `output/<site-name>/files/` — converted documents as `.md` + `.json` metadata files
