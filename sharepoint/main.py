@@ -1,8 +1,8 @@
 """
 Entry point orchestration script for the SharePoint integration PoC.
-Loads credentials from .env, site configs from sites_config.yaml, crawls all 
-pages and files from the configured SharePoint sites, and saves them as 
-Markdown documents under ./output/<site-name>/.
+Loads all configuration (credentials and site definitions) from environment
+variables (e.g. a .env file). Crawls all configured SharePoint sites and
+saves content as Markdown documents under OUTPUT_DIR/<group>/<site>/.
 
 Usage:
     python main.py                    # Crawl all sites
@@ -98,17 +98,11 @@ def main() -> None:
         dest="list_sites",
         help="List configured sites and exit.",
     )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Path to sites_config.yaml (default: ./sites_config.yaml)",
-    )
     args = parser.parse_args()
 
     # Load configuration
     try:
-        config = load_config(args.config)
+        config = load_config()
     except (FileNotFoundError, ValueError) as e:
         logger.error(str(e))
         sys.exit(1)

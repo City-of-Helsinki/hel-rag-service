@@ -1,6 +1,6 @@
 """
 Configuration loader for multi-site SharePoint crawling.
-Loads site definitions from YAML, credentials from environment variables.
+All configuration is loaded from environment variables (e.g. from a .env file).
 """
 
 from __future__ import annotations
@@ -10,11 +10,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
 logger = logging.getLogger(__name__)
-
-DEFAULT_CONFIG_FILE = Path(__file__).parent / "sites_config.yaml"
 
 
 @dataclass
@@ -68,26 +64,31 @@ class SharePointConfig:
         return sites
 
 
-def load_config(config_path: Path | str | None = None) -> SharePointConfig:
-    """Load SharePoint configuration from YAML file and environment variables.
-    
-    Credentials are loaded exclusively from environment variables:
-      - SHAREPOINT_TENANT_ID
-      - SHAREPOINT_CLIENT_ID
-      - SHAREPOINT_CLIENT_SECRET
-    
-    Site definitions are loaded from the YAML config file.
+def load_config() -> SharePointConfig:
+    """Load SharePoint configuration entirely from environment variables.
+
+    Required variables:
+      - SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID, SHAREPOINT_CLIENT_SECRET
+      - SITES  (comma-separated group keys)
+      - SITE_<KEY>_URLS  (comma-separated URLs for each group)
+
+    Optional per-group variables:
+      - SITE_<KEY>_NAME        (display name, defaults to key)
+      - SITE_<KEY>_KB_NAME     (Open WebUI knowledge base name)
+      - SITE_<KEY>_PAGE_PATHS  (comma-separated server-relative page paths to crawl;
+                                leave unset to crawl all pages)
+
+    When a group has multiple URLs (SITE_<KEY>_URLS=url1,url2), you can supply
+    per-URL page-path filters using a 0-based index suffix:
+      - SITE_<KEY>_0_PAGE_PATHS  (page paths for the first URL)
+      - SITE_<KEY>_1_PAGE_PATHS  (page paths for the second URL)
+    The indexed variable takes precedence over the group-level one.
+
+    Optional global variables:
+      - OUTPUT_DIR         (default: "output")
+      - FILE_EXTENSIONS    (comma-separated, default: ".pdf,.docx,.pptx,.xlsx")
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_FILE
-    config_path = Path(config_path)
-
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    logger.info("Loading configuration from: %s", config_path)
-
-    # Load credentials from environment
+    # Load credentials
     tenant_id = os.environ.get("SHAREPOINT_TENANT_ID", "")
     client_id = os.environ.get("SHAREPOINT_CLIENT_ID", "")
     client_secret = os.environ.get("SHAREPOINT_CLIENT_SECRET", "")
@@ -99,47 +100,65 @@ def load_config(config_path: Path | str | None = None) -> SharePointConfig:
         missing.append("SHAREPOINT_CLIENT_ID")
     if not client_secret:
         missing.append("SHAREPOINT_CLIENT_SECRET")
-
     if missing:
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
-    # Load site config from YAML
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    # Global options
+    output_dir = Path(os.environ.get("OUTPUT_DIR", "output"))
 
-    output_dir = Path(config.get("output_dir", "output"))
-
-    raw_extensions = config.get("file_extensions", [".pdf", ".docx", ".pptx", ".xlsx"])
+    raw_extensions = os.environ.get("FILE_EXTENSIONS", ".pdf,.docx,.pptx,.xlsx")
     file_extensions = {
-        ext.lower() if ext.startswith(".") else f".{ext.lower()}"
-        for ext in raw_extensions
+        ext.strip().lower() if ext.strip().startswith(".") else f".{ext.strip().lower()}"
+        for ext in raw_extensions.split(",")
+        if ext.strip()
     }
 
-    # Parse site groups
-    site_groups: dict[str, SiteGroup] = {}
-    sites_config = config.get("sites", {})
+    # Parse site groups from env vars
+    sites_raw = os.environ.get("SITES", "").strip()
+    if not sites_raw:
+        raise ValueError(
+            "Missing required environment variable: SITES "
+            "(comma-separated list of site group keys, e.g. SITES=group1,group2)"
+        )
 
-    for group_key, group_data in sites_config.items():
+    group_keys = [k.strip() for k in sites_raw.split(",") if k.strip()]
+    site_groups: dict[str, SiteGroup] = {}
+
+    for group_key in group_keys:
         group_key_lower = group_key.lower()
-        group_name = group_data.get("name", group_key)
-        urls = group_data.get("urls", [])
+        prefix = f"SITE_{group_key.upper()}"
+
+        name = os.environ.get(f"{prefix}_NAME", group_key)
+        kb_name = os.environ.get(f"{prefix}_KB_NAME", "")
+        urls_raw = os.environ.get(f"{prefix}_URLS", "").strip()
+
+        if not urls_raw:
+            logger.warning("No URLs configured for site group '%s' (%s_URLS). Skipping.", group_key, prefix)
+            continue
+
+        url_list = [u.strip() for u in urls_raw.split(",") if u.strip()]
+
+        # Group-level page paths (fallback when no per-URL override exists)
+        group_page_paths_raw = os.environ.get(f"{prefix}_PAGE_PATHS", "").strip()
+        group_page_paths: list[str] | None = (
+            [p.strip() for p in group_page_paths_raw.split(",") if p.strip()]
+            if group_page_paths_raw else None
+        )
 
         sites = []
-        for i, url_entry in enumerate(urls):
-            # Support both string URLs and dict with url + page_paths
-            if isinstance(url_entry, str):
-                url = url_entry
-                page_paths = None
-            else:
-                url = url_entry.get("url", "")
-                page_paths = url_entry.get("page_paths")
-            
-            if not url:
-                logger.warning("Empty URL in group %s, skipping", group_key)
-                continue
-                
-            site_key = f"{group_key_lower}_{i}" if len(urls) > 1 else group_key_lower
+        for i, url in enumerate(url_list):
+            site_key = f"{group_key_lower}_{i}" if len(url_list) > 1 else group_key_lower
             site_name = url.rstrip("/").split("/")[-1]
+
+            # Per-URL page paths (indexed variable takes precedence)
+            per_url_raw = os.environ.get(f"{prefix}_{i}_PAGE_PATHS", "").strip()
+            if per_url_raw:
+                page_paths: list[str] | None = [
+                    p.strip() for p in per_url_raw.split(",") if p.strip()
+                ]
+            else:
+                page_paths = group_page_paths
+
             sites.append(SiteConfig(
                 key=site_key,
                 name=site_name,
@@ -148,13 +167,14 @@ def load_config(config_path: Path | str | None = None) -> SharePointConfig:
                 page_paths=page_paths,
             ))
 
-        kb_name = group_data.get("kb_name", "")
         site_groups[group_key_lower] = SiteGroup(
-            key=group_key_lower, name=group_name, kb_name=kb_name, sites=sites
+            key=group_key_lower, name=name, kb_name=kb_name, sites=sites
         )
 
     if not site_groups:
-        raise ValueError("No sites configured in YAML. Add at least one site group.")
+        raise ValueError(
+            "No sites configured. Set SITES and corresponding SITE_<KEY>_URLS variables."
+        )
 
     total_sites = sum(len(g.sites) for g in site_groups.values())
     logger.info("Loaded %d site group(s) with %d total site(s).", len(site_groups), total_sites)
