@@ -13,15 +13,20 @@ the run.
 Usage:
     python pipeline_runner.py [--sites <group> ...] [--config <path>]
 
-Environment variables (injected from the OpenShift Secret):
+Environment variables (all loaded from .env or injected from the OpenShift Secret):
     SHAREPOINT_TENANT_ID      - Azure AD tenant
     SHAREPOINT_CLIENT_ID      - Azure AD app client ID
     SHAREPOINT_CLIENT_SECRET  - Azure AD app client secret
     OPEN_WEB_UI_BASE_URL      - Open WebUI base URL
     OPEN_WEB_UI_API_KEY       - Open WebUI API key
+    SITES                     - Comma-separated site group keys
+    SITE_<KEY>_NAME           - Display name for a site group
+    SITE_<KEY>_KB_NAME        - Open WebUI Knowledge Base name for a site group
+    SITE_<KEY>_URLS           - Comma-separated SharePoint URLs for a site group
 
 Optional:
     OUTPUT_DIR                - Base path for crawl output (default: /data/output)
+    FILE_EXTENSIONS           - Comma-separated extensions (default: .pdf,.docx,.pptx,.xlsx)
     PIPELINE_SITES            - Comma-separated site group filter (default: all)
 """
 
@@ -113,12 +118,6 @@ def main() -> None:
         default=[],
         help="Site groups to crawl. Omit for all.",
     )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Path to sites_config.yaml (default: ./sites_config.yaml).",
-    )
     args = parser.parse_args()
 
     # Env var override for sites filter (comma-separated)
@@ -131,7 +130,7 @@ def main() -> None:
 
     # Load config
     try:
-        config = load_config(args.config)
+        config = load_config()
     except (FileNotFoundError, ValueError) as exc:
         logger.error("Configuration error: %s", exc)
         sys.exit(1)
